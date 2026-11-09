@@ -303,6 +303,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
+    // Нативный ORT для проверки UINT16 на хосте CI, не включается в Android APK.
+    testRuntimeOnly("com.microsoft.onnxruntime:onnxruntime:1.29.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
