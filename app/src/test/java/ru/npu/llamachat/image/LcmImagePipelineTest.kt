@@ -43,6 +43,15 @@ class LcmImagePipelineTest {
         assertArrayEquals(expected, a, 0f)
     }
 
+    @Test fun `decoder output already in zero to one range is not rescaled`() {
+        val pipeline = LcmImagePipeline(
+            { floatArrayOf(1f) }, { latent, _, _ -> FloatArray(latent.size) },
+            { floatArrayOf(-1f, 0.25f, 2f) }, latentSize = 1, imageSize = 3,
+            decoderRange = LcmImagePipeline.DecoderRange.ZERO_TO_ONE
+        )
+        assertArrayEquals(floatArrayOf(0f, 0.25f, 1f), pipeline.generate("test", steps = 1, seed = 0), 0f)
+    }
+
     @Test fun `invalid output and cancellation prevent decoding`() {
         var decoded = false
         val bad = LcmImagePipeline(

@@ -14,8 +14,11 @@ internal class LcmImagePipeline(
     private val vae: Decoder,
     private val latentSize: Int = 4 * 64 * 64,
     private val imageSize: Int = 3 * 512 * 512,
-    private val latentScale: Float = 0.18215f
+    private val latentScale: Float = 0.18215f,
+    private val decoderRange: DecoderRange = DecoderRange.NEGATIVE_ONE_TO_ONE
 ) {
+    enum class DecoderRange { NEGATIVE_ONE_TO_ONE, ZERO_TO_ONE }
+
     fun interface TextEncoder { fun encode(prompt: String): FloatArray }
     fun interface Denoiser { fun predict(latent: FloatArray, timestep: Int, embedding: FloatArray): FloatArray }
     fun interface Decoder { fun decode(latent: FloatArray): FloatArray }
@@ -56,6 +59,12 @@ internal class LcmImagePipeline(
         val decoded = vae.decode(FloatArray(latentSize) { latent[it] / latentScale })
         require(decoded.size == imageSize && decoded.all { it.isFinite() }) { "Некорректный результат VAE" }
         checkCancelled()
-        return FloatArray(imageSize) { ((decoded[it] + 1f) / 2f).coerceIn(0f, 1f) }
+        return FloatArray(imageSize) {
+            val value = when (decoderRange) {
+                DecoderRange.NEGATIVE_ONE_TO_ONE -> (decoded[it] + 1f) / 2f
+                DecoderRange.ZERO_TO_ONE -> decoded[it]
+            }
+            value.coerceIn(0f, 1f)
+        }
     }
 }
