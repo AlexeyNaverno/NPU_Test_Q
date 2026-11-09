@@ -38,7 +38,7 @@ internal object DreamShaperLcm {
         checkCancelled: () -> Unit = {},
         onStep: (Int, Int) -> Unit = { _, _ -> }
     ): FloatArray {
-        require(steps in 4..5) { "Для этой LCM-модели доступны 4–5 шагов" }
+        require(steps in 1..50) { "Количество шагов LCM должно быть от 1 до 50" }
         val tokenizer = ClipTokenizerFiles.load(File(directory, "tokenizer"))
         var unet: QnnUInt16Graph? = null
         try {

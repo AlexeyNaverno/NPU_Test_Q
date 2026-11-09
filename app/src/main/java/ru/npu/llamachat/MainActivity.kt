@@ -8,6 +8,8 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.view.inputmethod.EditorInfo
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +26,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.tabs.TabLayout
 import ru.npu.llamachat.api.ApiService
+import ru.npu.llamachat.image.ImageModelCatalog
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -105,10 +108,29 @@ class MainActivity : AppCompatActivity() {
             override fun onTabUnselected(tab: TabLayout.Tab) = Unit
             override fun onTabReselected(tab: TabLayout.Tab) = Unit
         })
+        binding.spinnerImageModel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            ImageModelCatalog.models.map { it.title })
+        binding.spinnerImageModel.setSelection(imageViewModel.state.value.selectedModel)
+        binding.spinnerImageModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { imageViewModel.selectModel(position) }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        binding.btnImageDownload.setOnClickListener {
+            val model = ImageModelCatalog.models[imageViewModel.state.value.selectedModel]
+            val mib = model.totalBytes / (1024 * 1024)
+            MaterialAlertDialogBuilder(this).setTitle("Скачать ${model.title}?")
+                .setMessage("Будет скачано около $mib МиБ во внутреннюю память приложения. Нужны интернет и свободное место; при замене старой копии нужно место для обеих. Условия CreativeML OpenRAIL-M распространяются на модель." +
+                    if (!model.canGenerate) " Внимание: генерация Anything V5 ещё не подключена." else "")
+                .setNegativeButton("Отмена", null).setPositiveButton("Скачать") { _, _ -> imageViewModel.downloadModel() }.show()
+        }
         binding.btnImageImport.setOnClickListener { pickImageFolder.launch(null) }
         binding.btnImageGenerate.setOnClickListener {
-            imageViewModel.generate(binding.etImagePrompt.text?.toString().orEmpty(),
-                if (binding.switchImageSteps.isChecked) 5 else 4, java.security.SecureRandom().nextLong())
+            val steps = binding.etImageSteps.text?.toString()?.toIntOrNull()
+            val seedText = binding.etImageSeed.text?.toString().orEmpty().trim()
+            val seed = if (seedText.isEmpty()) java.security.SecureRandom().nextLong() else seedText.toLongOrNull()
+            if (steps == null || seed == null) {
+                Snackbar.make(binding.root, "Проверьте число шагов и seed", Snackbar.LENGTH_LONG).show()
+            } else imageViewModel.generate(binding.etImagePrompt.text?.toString().orEmpty(), steps, seed)
         }
         binding.btnImageCancel.setOnClickListener { imageViewModel.cancel() }
         binding.btnImageSave.setOnClickListener { saveImage.launch("image.png") }
@@ -116,8 +138,10 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 imageViewModel.state.collect { state ->
                     binding.tvImageStatus.text = state.status
-                    binding.btnImageImport.isEnabled = !state.busy
-                    binding.btnImageGenerate.isEnabled = !state.busy && state.installed
+                    binding.spinnerImageModel.isEnabled = !state.busy
+                    binding.btnImageDownload.isEnabled = !state.busy
+                    binding.btnImageImport.isEnabled = !state.busy && state.selectedModel == 0
+                    binding.btnImageGenerate.isEnabled = !state.busy && state.installed && state.canGenerate
                     binding.btnImageCancel.isEnabled = state.busy
                     binding.btnImageSave.isEnabled = !state.busy && state.bitmap != null
                     binding.ivGeneratedImage.setImageBitmap(state.bitmap)

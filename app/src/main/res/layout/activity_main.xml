@@ -373,14 +373,19 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Экспериментальный DreamShaper 8 LCM v73, 512×512. Модель для 8 Gen 2 может не загрузиться на 8s Gen 3; качество и работа NPU не проверены. Перед генерацией выгрузите модель чата. Для импорта нужно около 1,13 ГБ свободного места (при замене — вдвое больше). Условия OpenRAIL распространяются на модель."
+                android:text="Модели занимают более 1 ГБ каждая. Условия OpenRAIL распространяются на модель. DreamShaper для 8 Gen 2 может не загрузиться на 8s Gen 3. Перед генерацией выгрузите модель чата. Anything V5 пока можно только скачать: генерация и NPU для неё ещё не подключены."
                 android:textAppearance="?attr/textAppearanceBodySmall" />
-            <TextView
+            <Spinner
+                android:id="@+id/spinnerImageModel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:autoLink="web"
-                android:text="https://huggingface.co/latentdivergence/dreamshaper8-lcm-npu-8gen2" />
+                android:minHeight="48dp"
+                android:contentDescription="Модель изображения" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnImageDownload"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Скачать выбранную модель" />
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnImageImport"
                 android:layout_width="wrap_content"
@@ -404,11 +409,27 @@
                     android:minLines="2"
                     android:maxLines="5" />
             </com.google.android.material.textfield.TextInputLayout>
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/switchImageSteps"
-                android:layout_width="wrap_content"
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="5 шагов вместо 4" />
+                android:hint="Шаги LCM (1–50; рекомендуется 4)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImageSteps"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="4" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Seed (пусто — случайный)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImageSeed"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberSigned" />
+            </com.google.android.material.textfield.TextInputLayout>
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
