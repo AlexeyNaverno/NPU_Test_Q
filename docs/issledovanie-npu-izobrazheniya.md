@@ -66,3 +66,9 @@ Snapdragon 8 Gen 2 и 8s Gen 3 имеют v73, но аппаратная арх�
 ### Подготовка QNN Runtime
 
 В Gradle подключены ORT Android 1.29.0, QNN Plugin EP 2.7.0 и QNN Runtime 2.51.0. В `QnnHtpRuntime` добавлено создание сессии EPContext с явным HTP backend и `session.disable_cpu_ep_fallback=1`. Компонент экспериментальный, ещё не подключён к UI и не прошёл проверки на устройстве; его вызов возможен только после освобождения LLM и организации единого владения NPU. Его наличие не означает готового генератора. В частности, требуется подтвердить совместимость модельных контекстов с этой версией QNN и SM8635.
+
+### Дополнительный блокер uint16 для выбранного пакета
+
+Кандидат DreamShaper8 EPContext принимает uint16-тензоры. Проверка [исходников ORT Java 1.29.0](https://github.com/microsoft/onnxruntime/blob/v1.29.0/java/src/main/java/ai/onnxruntime/OnnxJavaType.java) показывает, что отдельного `OnnxJavaType.UINT16` нет: UINT16 отображается как подписанный носитель INT16. [Фабрика тензоров из ShortBuffer](https://github.com/microsoft/onnxruntime/blob/v1.29.0/java/src/main/java/ai/onnxruntime/OnnxTensor.java) создаёт именно INT16/FLOAT16/BFLOAT16, поэтому подавать данные этой модели как `INT16` нельзя — тип графа не совпадёт. Добавлен unit-тест этого ограничения.
+
+Для работающей реализации потребуется отдельный аккуратно управляемый native C/C++ интерфейс ORT с `ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16`, либо другой проверенный комплект графов с совместимым типом входов. Кроме этого нужны токенизация, соединение трёх графов с sampler, управление памятью NPU и UI. Один только `QnnHtpRuntime.open` не выполняет модель и не является генератором.
