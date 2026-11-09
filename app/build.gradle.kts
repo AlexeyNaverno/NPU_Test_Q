@@ -250,7 +250,7 @@ android {
             useLegacyPackaging = true
             // CRITICAL: libggml-htp-*.so are Qualcomm QDSP6 Hexagon ELF binaries (EM_HEXAGON) containing
             // a custom SWIV ELF section for unsigned PD validation — NEVER run NDK llvm-strip on them!
-            keepDebugSymbols += setOf("**/libggml-htp-*.so")
+            keepDebugSymbols += setOf("**/libggml-htp-*.so", "**/libQnnHtp*Skel.so")
             pickFirsts += setOf("**/libc++_shared.so", "**/libomp.so")
         }
         resources {
@@ -286,6 +286,10 @@ tasks.matching {
 }
 
 dependencies {
+    // ONNX Runtime и QNN plugin: только подготовка HTP сессий; генератор ещё не подключён.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+    implementation("com.qualcomm.qti:onnxruntime-android-qnn:2.7.0")
+    implementation("com.qualcomm.qti:qnn-runtime:2.51.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.ktx)
