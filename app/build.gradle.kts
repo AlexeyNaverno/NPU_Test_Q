@@ -227,6 +227,13 @@ android {
                 signingConfigs.getByName("debug")
             }
         }
+        // Изолированная диагностическая копия: другой applicationId, данные существующей версии не затрагиваются.
+        create("diagnostic") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".diagnostic"
+            versionNameSuffix = "-diagnostic.1"
+            matchingFallbacks += listOf("release")
+        }
     }
 
     externalNativeBuild {
