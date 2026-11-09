@@ -14,11 +14,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v0.0.5 --repo "$GITHUB_REPOSITORY" --pattern 'NPU_Llama_Chat-v0.0.5-release.apk' --dir /tmp
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
-          test -x "$APKSIGNER"
-          FINGERPRINT=$("$APKSIGNER" verify --print-certs /tmp/NPU_Llama_Chat-v0.0.5-release.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
-          test -n "$FINGERPRINT"
+          if ! gh release download v0.0.5 --repo "$GITHUB_REPOSITORY" --pattern 'NPU_Llama_Chat-v0.0.5-release.apk' --dir /tmp; then
+            echo "::error::Не удалось скачать опубликованный APK"; exit 1
+          fi
+          echo "::notice::APK v0.0.5 загружен"
+          APKSIGNER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | sort -V | tail -1)
+          if [ ! -x "$APKSIGNER" ]; then echo "::error::Не найден apksigner"; exit 1; fi
+          echo "::notice::apksigner найден"
+          if ! "$APKSIGNER" verify --print-certs /tmp/NPU_Llama_Chat-v0.0.5-release.apk > /tmp/certinfo.txt; then
+            echo "::error::Не удалось прочитать сертификат APK"; exit 1
+          fi
+          FINGERPRINT=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' /tmp/certinfo.txt)
+          if [ -z "$FINGERPRINT" ]; then echo "::error::Не найден SHA-256 сертификата"; exit 1; fi
           echo "::notice title=Подпись релиза v0.0.5::SHA-256 сертификата: $FINGERPRINT"
           if [ -f "$HOME/.android/debug.keystore" ]; then
             echo "::notice title=Ключ в новом runner::Файл debug.keystore уже существует; требуется отдельная проверка совпадения сертификатов."
