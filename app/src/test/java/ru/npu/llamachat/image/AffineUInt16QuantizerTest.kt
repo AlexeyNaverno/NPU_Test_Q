@@ -20,6 +20,12 @@ class AffineUInt16QuantizerTest {
         assertEquals(65535, q.quantize(1e20f))
     }
 
+    @Test fun `dreamshaper timestep quantization saturates initial LCM timestep`() {
+        val q = AffineUInt16Quantizer(0.012222476303577423, 0)
+        assertEquals(65535, q.quantize(999f))
+        assertEquals(true, q.quantize(799f) < 65535)
+    }
+
     @Test fun `invalid parameters and non finite tensors are rejected`() {
         assertThrows(IllegalArgumentException::class.java) { AffineUInt16Quantizer(0.0, 0) }
         assertThrows(IllegalArgumentException::class.java) { AffineUInt16Quantizer(Double.NaN, 0) }

@@ -9,6 +9,7 @@ import android.system.Os
 import ru.npu.llamachat.engine.SnapdragonNpuDetector
 import java.io.Closeable
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * Экспериментальный загрузчик ONNX EPContext. Сам по себе не реализует генерацию.
@@ -42,18 +43,22 @@ object QnnHtpRuntime {
 
     /**
      * Загружает один локальный ONNX EPContext с бинарным контекстом рядом с ним.
-     * Строгая настройка запрещает ORT запускать неподдерживаемые операторы на CPU.
+     * По умолчанию запрещает CPU fallback. Исключение для проверенных по SHA256
+     * обёрток DreamShaper позволяет ORT назначить CPU только внешние узлы Q/DQ.
      */
-    fun open(context: Context, modelFile: File): HtpSession {
+    fun open(context: Context, modelFile: File, allowKnownQuantizationOnCpu: Boolean = false): HtpSession {
         require(modelFile.isFile && modelFile.canRead() && modelFile.extension.equals("onnx", true)) {
             "Не найден читаемый ONNX файл: ${modelFile.name}"
         }
+        if (allowKnownQuantizationOnCpu) requireKnownWrapper(modelFile)
         val env = getEnvironment(context)
         val devices = env.epDevices.filter { it.epName == getEpName() }
         check(devices.isNotEmpty()) { "Устройство QNN HTP недоступно" }
         val options = OrtSession.SessionOptions()
         try {
-            options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
+            // В закреплённых обёртках вне EPContext есть только Q/DQ. CPU разрешён
+            // лишь для них; сам EPContext может выполняться только через QNN HTP.
+            if (!allowKnownQuantizationOnCpu) options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
             options.addExecutionProvider(devices, mapOf("backend_type" to "htp"))
             val session = env.createSession(modelFile.absolutePath, options)
             return HtpSession(session, options)
@@ -61,6 +66,19 @@ object QnnHtpRuntime {
             options.close()
             throw t
         }
+    }
+
+    private fun requireKnownWrapper(file: File) {
+        val hashes = mapOf(
+            "text_encoder.onnx" to "fc06df873065d0129fcb1e42b85200486bc9414b6914f2f82ea69a8c8ed6c8b8",
+            "unet.onnx" to "286a49715a74e7fc739ae972f27965b70458d62130b3f83e1c28d65eec30121b",
+            "vae.onnx" to "a92718467028e6289be68e46e7000f5e99d0d14377ebfbec738cee8a05bef29d"
+        )
+        val expected = hashes[file.name] ?: throw IllegalArgumentException("Неизвестная обёртка QNN")
+        require(file.length() in 1..4096) { "Неверный размер обёртки QNN" }
+        val actual = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        require(actual == expected) { "Обёртка QNN не соответствует проверенной ревизии" }
     }
 
     class HtpSession internal constructor(

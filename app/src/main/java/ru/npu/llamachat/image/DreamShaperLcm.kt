@@ -10,7 +10,7 @@ import java.nio.IntBuffer
 /**
  * Экспериментальный pipeline для конкретного DreamShaper8 LCM 8gen2, ревизия
  * 6a2e524fe1e74f8050ea169f6cec1f725f956d90. Все три графа требуют QNN HTP;
- * любые неподдерживаемые операторы приводят к ошибке, без CPU fallback.
+ * CPU допускается для внешних Q/DQ операций проверенных по SHA-256 обёрток.
  * Файлы контекста должны находиться рядом с ONNX. До вызова необходимо освободить
  * LLM и обеспечить эксклюзивный доступ к NPU. На реальном устройстве не проверен.
  */
@@ -46,14 +46,14 @@ internal object DreamShaperLcm {
                 textEncoder = { text -> encodeText(context, File(directory, "text_encoder.onnx"), tokenizer.tokenize(text)) },
                 unet = { latent, timestep, embedding ->
                     val graph = unet ?: QnnUInt16Graph.open(context, File(directory, "unet.onnx"),
-                        listOf(unetTime, unetLatent, unetText), unetOutput).also { unet = it }
+                        listOf(unetTime, unetLatent, unetText), unetOutput, allowKnownQuantizationOnCpu = true).also { unet = it }
                     graph.run(mapOf("timestep" to floatArrayOf(timestep.toFloat()), "latent" to latent, "text_emb" to embedding))
                 },
                 vae = { latent ->
                     unet?.close()
                     unet = null
                     checkCancelled()
-                    QnnUInt16Graph.open(context, File(directory, "vae.onnx"), listOf(vaeInput), vaeOutput).use {
+                    QnnUInt16Graph.open(context, File(directory, "vae.onnx"), listOf(vaeInput), vaeOutput, allowKnownQuantizationOnCpu = true).use {
                         it.run(mapOf("latent" to latent))
                     }
                 },
@@ -66,7 +66,7 @@ internal object DreamShaperLcm {
     }
 
     private fun encodeText(context: Context, file: File, tokens: IntArray): FloatArray {
-        QnnHtpRuntime.open(context, file).use { htp ->
+        QnnHtpRuntime.open(context, file, allowKnownQuantizationOnCpu = true).use { htp ->
             val inputs = htp.session.inputInfo
             val outputs = htp.session.outputInfo
             require(inputs.keys == setOf("tokens")) { "Неподходящий граф CLIP" }

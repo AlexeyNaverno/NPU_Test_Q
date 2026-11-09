@@ -29,7 +29,7 @@ internal data class QuantizedTensorSpec(
 
 /**
  * Один строго HTP-граф с явно заданными именами, формами и параметрами quantization.
- * Не выбирает модель и не является готовым SD-пайплайном. CPU fallback в графе запрещён.
+ * Не выбирает модель и не является готовым SD-пайплайном. Для проверенных обёрток DreamShaper допускаются CPU-операции Q/DQ вокруг HTP EPContext.
  */
 internal class QnnUInt16Graph private constructor(
     private val htp: QnnHtpRuntime.HtpSession,
@@ -37,9 +37,9 @@ internal class QnnUInt16Graph private constructor(
     private val output: QuantizedTensorSpec
 ) : Closeable {
     companion object {
-        fun open(context: Context, file: File, inputs: List<QuantizedTensorSpec>, output: QuantizedTensorSpec): QnnUInt16Graph {
+        fun open(context: Context, file: File, inputs: List<QuantizedTensorSpec>, output: QuantizedTensorSpec, allowKnownQuantizationOnCpu: Boolean = false): QnnUInt16Graph {
             require(inputs.isNotEmpty() && inputs.map { it.name }.distinct().size == inputs.size)
-            val session = QnnHtpRuntime.open(context, file)
+            val session = QnnHtpRuntime.open(context, file, allowKnownQuantizationOnCpu)
             try {
                 val actualInputs = session.session.inputInfo
                 val actualOutputs = session.session.outputInfo
