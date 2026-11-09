@@ -26,3 +26,13 @@ Foreground service повышает приоритет процесса, но н
 * API по умолчанию должен слушать только loopback, иметь ограничение запросов и не сохранять историю. Открывать доступ в сеть без защиты нельзя.
 * Сервис должен показывать состояние и действия в уведомлении; запрос POST_NOTIFICATIONS на Android 13+ не заменяет сам foreground service. Для target SDK 36 требуется корректный тип foreground service и соответствующие разрешения.
 * Генератор нельзя объявлять готовым до проверки всех трёх сетей на HTP и их запуска с подходящими моделями на SM8635; при неподдерживаемом графе — понятная ошибка вместо CPU/GPU fallback.
+
+## Уточнение по Android-интеграции (QNN через ONNX Runtime)
+
+Существует опубликованный Android AAR `com.microsoft.onnxruntime:onnxruntime-android-qnn` с QNN Execution Provider и зависимостью от Qualcomm QNN runtime. Например, по [POM 1.27.0](https://central.sonatype.com/artifact/com.microsoft.onnxruntime/onnxruntime-android-qnn/1.27.0) его зависимость — QNN runtime 2.42.0. Сочетание версий следует проверять для конкретных бинарных контекстов: нельзя считать, что контекст, скомпилированный с другой версией QAIRT или для другой модели SoC, автоматически загрузится.
+
+В ONNX Runtime есть [настройка `session.disable_cpu_ep_fallback=1`](https://github.com/microsoft/onnxruntime/blob/v1.22.0/include/onnxruntime/core/session/onnxruntime_session_options_config_keys.h): если провайдер не поддерживает все узлы, создание сессии должно завершиться ошибкой. Её нужно установить отдельно для каждого графа text encoder, UNet и VAE, выбрать именно QNN HTP backend, не добавлять CPU EP явно и проверять фактический backend на устройстве. Это предотвращает тихий CPU fallback в графе, но само по себе не доказывает успешную работу на SM8635.
+
+[Шаблоны Qualcomm](https://github.com/quic/ai-hub-models/blob/main/src/qai_hub_models/models/templates/diffusion/stable_diffusion.py) имеют другие имена и формы входов, чем многие стандартные ONNX-экспорты: например, `tokens` у text encoder и `latent`, `timestep`, `text_emb` у UNet. Поэтому универсальный SD-клиент нельзя просто подключить к этим файлам без адаптации и проверки сигнатур. Потребуются также CLIP-токенизатор, согласованный scheduler и типы/масштабы выходных тензоров. Сырые `.safetensors`/GGUF не являются готовыми QNN context binaries.
+
+Для проверки на реальном аппарате необходим набор совместимых графов именно для SM8635 с известными версиями QNN, формами входов и токенизатором. На текущий момент ни такого проверенного набора, ни готового Android-пайплайна генерации в репозитории нет; публикация APK с заявленным работающим генератором была бы преждевременной.
