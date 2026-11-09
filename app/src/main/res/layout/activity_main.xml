@@ -359,4 +359,135 @@
         </LinearLayout>
     </ScrollView>
 
+    <ScrollView
+        android:id="@+id/imagePanel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:visibility="gone">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Модели занимают более 1 ГБ каждая. Условия OpenRAIL распространяются на модель. DreamShaper для 8 Gen 2 может не загрузиться на 8s Gen 3. Перед генерацией выгрузите модель чата. Anything V5: CLIP на CPU, UNet/VAE — попытка на NPU без CPU fallback; графы для CPU могут не загрузиться на NPU."
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+            <Spinner
+                android:id="@+id/spinnerImageModel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:contentDescription="Модель изображения" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnImageDownload"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Скачать выбранную модель" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnImageDelete"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Удалить выбранную модель" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnImageImport"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Импортировать папку модели" />
+            <TextView
+                android:id="@+id/tvImageStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textIsSelectable="true" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="Описание изображения">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImagePrompt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textMultiLine"
+                    android:minLines="2"
+                    android:maxLines="5" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Шаги (LCM 1–50, SD 1–100)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImageSteps"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="4" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/negativePromptLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Негативное описание (Anything V5)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etNegativePrompt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textMultiLine"
+                    android:minLines="1" android:maxLines="3" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/guidanceLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="CFG (Anything V5: 1–20)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImageGuidance"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberDecimal"
+                    android:text="7.5" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Seed (пусто — случайный)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImageSeed"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberSigned" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnImageGenerate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Создать" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnImageCancel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Отмена" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnImageSave"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="PNG" />
+            </LinearLayout>
+            <ImageView
+                android:id="@+id/ivGeneratedImage"
+                android:layout_width="match_parent"
+                android:layout_height="360dp"
+                android:contentDescription="Сгенерированное изображение"
+                android:scaleType="fitCenter" />
+        </LinearLayout>
+    </ScrollView>
+
 </LinearLayout>

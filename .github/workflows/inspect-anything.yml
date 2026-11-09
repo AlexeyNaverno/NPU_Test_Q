@@ -1,0 +1,37 @@
+name: Inspect Anything V5 ONNX compatibility
+on:
+  push:
+    branches: ["arena/**"]
+    paths: [".github/workflows/inspect-anything.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Inspect graph signatures and operator types
+        run: |
+          pip install onnx==1.19.1
+          python - <<'PY'
+          import hashlib, urllib.request, onnx, json
+          root='https://huggingface.co/xZekki/anything-v5-int8-onnx/resolve/43d5660428f9d40d34571b3ec191b35e0723efa0/'
+          models={
+             'text_encoder/model.onnx':'5e513044b9f677bd9adeba5f5dde60ec19d615cef7dfeb4a160a52371acb7c3e',
+             'unet/model.onnx':'1f6aa9f4f995de08ebd587a631acdaa2511bf49af29dd21683c775011c64d157',
+             'vae_decoder/model.onnx':'1f075dc6c5c5d55254a4e257a18ebe2b191ee2cf363178fc0a0d839c6d2b57fd'
+          }
+          def describe(v):
+             t=v.type.tensor_type
+             return (v.name, onnx.TensorProto.DataType.Name(t.elem_type), [d.dim_value if d.HasField('dim_value') else d.dim_param for d in t.shape.dim])
+          for name, expected in models.items():
+             with urllib.request.urlopen(root+name, timeout=120) as response: data=response.read()
+             if hashlib.sha256(data).hexdigest()!=expected: raise ValueError('incorrect checksum: '+name)
+             model=onnx.load_model_from_string(data)
+             payload={'inputs':[describe(i) for i in model.graph.input], 'outputs':[describe(i) for i in model.graph.output], 'ops':sorted(set(n.op_type for n in model.graph.node))}
+             print('::notice title='+name+'::'+json.dumps(payload))
+          PY

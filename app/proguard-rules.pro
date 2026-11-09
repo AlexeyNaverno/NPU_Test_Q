@@ -8,3 +8,8 @@
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;
 }
+
+# UInt16TensorFactory вызывает закрытый JNI метод ORT 1.29 по имени.
+-keepclassmembers class ai.onnxruntime.OnnxTensor {
+    private static native long createTensorFromBuffer(long, long, java.nio.Buffer, int, long, long[], int);
+}

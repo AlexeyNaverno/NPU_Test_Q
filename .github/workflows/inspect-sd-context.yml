@@ -1,0 +1,49 @@
+name: Inspect experimental SD model graph signatures
+on:
+  push:
+    branches: ["arena/**"]
+    paths: [".github/workflows/inspect-sd-context.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Inspect pinned ONNX wrappers (no model weights downloaded)
+        shell: bash
+        run: |
+          python -m pip install onnx==1.19.1
+          python - <<'PY'
+          import hashlib, urllib.request, json, onnx
+          root = 'https://huggingface.co/latentdivergence/dreamshaper8-lcm-npu-8gen2/resolve/6a2e524fe1e74f8050ea169f6cec1f725f956d90/'
+          files = {
+              'text_encoder.onnx': 'fc06df873065d0129fcb1e42b85200486bc9414b6914f2f82ea69a8c8ed6c8b8',
+              'unet.onnx': '286a49715a74e7fc739ae972f27965b70458d62130b3f83e1c28d65eec30121b',
+              'vae.onnx': 'a92718467028e6289be68e46e7000f5e99d0d14377ebfbec738cee8a05bef29d',
+          }
+          def describe(value):
+              t = value.type.tensor_type
+              return value.name, onnx.TensorProto.DataType.Name(t.elem_type), [d.dim_value if d.HasField('dim_value') else d.dim_param for d in t.shape.dim]
+          for name, digest in files.items():
+              data = urllib.request.urlopen(root + name, timeout=60).read(4096)
+              if hashlib.sha256(data).hexdigest() != digest:
+                  raise ValueError(f'{name}: SHA256 mismatch')
+              m = onnx.load_model_from_string(data)
+              print('\n---', name, '---')
+              inputs = [describe(v) for v in m.graph.input]
+              outputs = [describe(v) for v in m.graph.output]
+              print('inputs:', inputs)
+              print('outputs:', outputs)
+              print('::notice title=' + name + '::' + json.dumps({'inputs': inputs, 'outputs': outputs}, ensure_ascii=True))
+              nodes = [(n.domain, n.op_type) for n in m.graph.node]
+              print('nodes:', nodes)
+              print('::notice title=' + name + ' nodes::' + json.dumps(nodes))
+              initializers = {x.name: onnx.numpy_helper.to_array(x).tolist() for x in m.graph.initializer}
+              print('initializers:', initializers)
+              print('::notice title=' + name + ' constants::' + json.dumps(initializers))
+          PY

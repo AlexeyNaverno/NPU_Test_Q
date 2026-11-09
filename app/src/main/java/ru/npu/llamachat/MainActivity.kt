@@ -8,6 +8,8 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.view.inputmethod.EditorInfo
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,7 +26,10 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.tabs.TabLayout
 import ru.npu.llamachat.api.ApiService
+import ru.npu.llamachat.image.ImageModelCatalog
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import ru.npu.llamachat.databinding.ActivityMainBinding
 import ru.npu.llamachat.ui.ChatAdapter
 import ru.npu.llamachat.ui.ChatUiState
@@ -38,6 +43,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val viewModel: ChatViewModel get() = (application as NpuApplication).session
+    private val imageViewModel get() = (application as NpuApplication).images
+    private val pickImageFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) imageViewModel.importModel(uri)
+    }
+    private val saveImage = registerForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+        val bitmap = imageViewModel.state.value.bitmap
+        if (uri != null && bitmap != null) lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openOutputStream(uri)?.use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) } == true }
+            }
+            Snackbar.make(binding.root, if (result.getOrDefault(false)) "PNG сохранён" else "Не удалось сохранить PNG", Snackbar.LENGTH_LONG).show()
+        }
+    }
     private val chatAdapter = ChatAdapter()
     private var activeAlertDialog: AlertDialog? = null
 
@@ -80,14 +98,70 @@ class MainActivity : AppCompatActivity() {
     private fun setupTabsAndApi() {
         binding.tabs.addTab(binding.tabs.newTab().setText("Чат"))
         binding.tabs.addTab(binding.tabs.newTab().setText("API"))
+        binding.tabs.addTab(binding.tabs.newTab().setText("Изображения"))
         binding.tabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) {
                 binding.chatPanel.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
                 binding.apiPanel.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
+                binding.imagePanel.visibility = if (tab.position == 2) View.VISIBLE else View.GONE
             }
             override fun onTabUnselected(tab: TabLayout.Tab) = Unit
             override fun onTabReselected(tab: TabLayout.Tab) = Unit
         })
+        binding.spinnerImageModel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            ImageModelCatalog.models.map { it.title })
+        binding.spinnerImageModel.setSelection(imageViewModel.state.value.selectedModel)
+        binding.spinnerImageModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position != imageViewModel.state.value.selectedModel) binding.etImageSteps.setText(if (position == 0) "4" else "30")
+                imageViewModel.selectModel(position)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        binding.btnImageDownload.setOnClickListener {
+            val model = ImageModelCatalog.models[imageViewModel.state.value.selectedModel]
+            val mib = model.totalBytes / (1024 * 1024)
+            MaterialAlertDialogBuilder(this).setTitle("Скачать ${model.title}?")
+                .setMessage("Будет скачано около $mib МиБ во внутреннюю память приложения. Нужны интернет и свободное место; при замене старой копии нужно место для обеих. Условия CreativeML OpenRAIL-M распространяются на модель." +
+                    if (model == ImageModelCatalog.anything) " Внимание: NPU-совместимость Anything V5 не подтверждена." else "")
+                .setNegativeButton("Отмена", null).setPositiveButton("Скачать") { _, _ -> imageViewModel.downloadModel() }.show()
+        }
+        binding.btnImageDelete.setOnClickListener {
+            val model = ImageModelCatalog.models[imageViewModel.state.value.selectedModel]
+            MaterialAlertDialogBuilder(this).setTitle("Удалить ${model.title}?")
+                .setMessage("Файлы модели и незавершённые загрузки будут удалены из памяти приложения.")
+                .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> imageViewModel.deleteModel() }.show()
+        }
+        binding.btnImageImport.setOnClickListener { pickImageFolder.launch(null) }
+        binding.btnImageGenerate.setOnClickListener {
+            val steps = binding.etImageSteps.text?.toString()?.toIntOrNull()
+            val seedText = binding.etImageSeed.text?.toString().orEmpty().trim()
+            val seed = if (seedText.isEmpty()) java.security.SecureRandom().nextLong() else seedText.toLongOrNull()
+            val guidance = if (imageViewModel.state.value.selectedModel == 0) 1f else binding.etImageGuidance.text?.toString()?.replace(',', '.')?.toFloatOrNull()
+            if (steps == null || seed == null || guidance == null) {
+                Snackbar.make(binding.root, "Проверьте шаги, CFG и seed", Snackbar.LENGTH_LONG).show()
+            } else imageViewModel.generate(binding.etImagePrompt.text?.toString().orEmpty(),
+                binding.etNegativePrompt.text?.toString().orEmpty(), steps, guidance, seed)
+        }
+        binding.btnImageCancel.setOnClickListener { imageViewModel.cancel() }
+        binding.btnImageSave.setOnClickListener { saveImage.launch("image.png") }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                imageViewModel.state.collect { state ->
+                    binding.tvImageStatus.text = state.status
+                    binding.spinnerImageModel.isEnabled = !state.busy
+                    binding.btnImageDownload.isEnabled = !state.busy
+                    binding.btnImageDelete.isEnabled = !state.busy
+                    binding.btnImageImport.isEnabled = !state.busy && state.selectedModel == 0
+                    binding.negativePromptLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE
+                    binding.guidanceLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE
+                    binding.btnImageGenerate.isEnabled = !state.busy && state.installed && state.canGenerate
+                    binding.btnImageCancel.isEnabled = state.busy
+                    binding.btnImageSave.isEnabled = !state.busy && state.bitmap != null
+                    binding.ivGeneratedImage.setImageBitmap(state.bitmap)
+                }
+            }
+        }
         binding.btnApiStart.setOnClickListener {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
