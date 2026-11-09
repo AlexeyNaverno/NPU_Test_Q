@@ -1,6 +1,14 @@
 # NPU Llama Chat (`v0.0.1`)
 
+[![Latest Release](https://img.shields.io/github/v/release/AlexeyNaverno/NPU_Test_Q?label=%D0%9F%D0%BE%D1%81%D0%BB%D0%B5%D0%B4%D0%BD%D0%B8%D0%B9%20%D1%80%D0%B5%D0%BB%D0%B8%D0%B7&style=for-the-badge)](https://github.com/AlexeyNaverno/NPU_Test_Q/releases/latest)
+
 Минималистичное Android-приложение на базе **llama.cpp (`ggml-hexagon`)** для запуска локальных языковых моделей формата **`.gguf`** строго на нейропроцессоре **Qualcomm Hexagon NPU** (целевая платформа — **Snapdragon 8s Gen 3 / `SM8635` / Hexagon HTP v73** и совместимые чипсеты линейки Snapdragon).
+
+## Скачать последний релиз
+
+- **Страница последнего релиза**: [**github.com/AlexeyNaverno/NPU_Test_Q/releases/latest**](https://github.com/AlexeyNaverno/NPU_Test_Q/releases/latest) (текущая версия: [`v0.0.1`](https://github.com/AlexeyNaverno/NPU_Test_Q/releases/tag/v0.0.1))
+- **Установочный Release APK (`arm64-v8a`, Hexagon NPU)**: [**Скачать `NPU_Llama_Chat-v0.0.1-release.apk`**](https://github.com/AlexeyNaverno/NPU_Test_Q/releases/latest/download/NPU_Llama_Chat-v0.0.1-release.apk)
+- **Debug APK и контрольные суммы**: [`NPU_Llama_Chat-v0.0.1-debug.apk`](https://github.com/AlexeyNaverno/NPU_Test_Q/releases/latest/download/NPU_Llama_Chat-v0.0.1-debug.apk) • [`SHA256SUMS.txt`](https://github.com/AlexeyNaverno/NPU_Test_Q/releases/latest/download/SHA256SUMS.txt)
 
 ---
 
