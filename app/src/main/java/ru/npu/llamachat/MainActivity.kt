@@ -77,6 +77,10 @@ class MainActivity : AppCompatActivity() {
                     launchGgufPicker()
                     true
                 }
+                R.id.action_unload_model -> {
+                    viewModel.unloadModel()
+                    true
+                }
                 R.id.action_clear_chat -> {
                     viewModel.clearChat()
                     true
@@ -142,6 +146,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchGgufPicker() {
         val state = viewModel.uiState.value
+        if (state.isLoadingModel || state.isUnloadingModel) return
         if (!state.npuStatus.ready && !state.npuInitializing) {
             Snackbar.make(
                 binding.root,
@@ -218,6 +223,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        binding.topAppBar.menu.findItem(R.id.action_unload_model).isEnabled =
+            state.loadedModel != null && !state.isLoadingModel && !state.isUnloadingModel
+
         // 2. Loaded Model Status & Progress
         val model = state.loadedModel
         if (state.isLoadingModel) {
@@ -230,7 +238,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             binding.progressModelLoad.visibility = View.GONE
             binding.tvLoadProgressLabel.visibility = View.GONE
-            binding.btnSelectGgufHeader.isEnabled = npu.ready
+            binding.btnSelectGgufHeader.isEnabled = npu.ready && !state.isUnloadingModel
         }
 
         if (model != null) {
@@ -318,14 +326,14 @@ class MainActivity : AppCompatActivity() {
                 else ->
                     "Модель «${model.fileName}» готова к работе на ${model.npuDeviceUsed} (макс. контекст ${model.nCtxActive} токенов). Напишите сообщение ниже."
             }
-            binding.btnPickModelEmpty.isEnabled = npu.ready && !state.isLoadingModel
+            binding.btnPickModelEmpty.isEnabled = npu.ready && !state.isLoadingModel && !state.isUnloadingModel
         } else {
             binding.layoutEmptyState.visibility = View.GONE
             binding.rvMessages.visibility = View.VISIBLE
         }
 
         // 7. Input Field & Send / Stop Button
-        val canChat = npu.ready && model != null && !state.isLoadingModel
+        val canChat = npu.ready && model != null && !state.isLoadingModel && !state.isUnloadingModel
         binding.etPromptInput.isEnabled = canChat && !state.isGenerating
         if (state.isGenerating || state.isLoadingModel) {
             binding.btnSendOrStop.isEnabled = true

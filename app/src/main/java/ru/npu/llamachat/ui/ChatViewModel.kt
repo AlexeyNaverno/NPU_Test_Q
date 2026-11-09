@@ -43,6 +43,7 @@ data class ChatUiState(
     ),
     val config: ModelConfig = ModelConfig(),
     val isLoadingModel: Boolean = false,
+    val isUnloadingModel: Boolean = false,
     val loadProgress: Float = 0f,
     val loadedModel: LoadedModelInfo? = null,
     val isGenerating: Boolean = false,
@@ -139,7 +140,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
-        if (state.isLoadingModel) return
+        if (state.isLoadingModel || state.isUnloadingModel) return
 
         val hadModelBefore = state.loadedModel != null
         generationJob?.cancel()
@@ -208,6 +209,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Освобождает веса и KV-кэш, не завершая приложение. */
+    fun unloadModel() {
+        val state = _uiState.value
+        if (state.loadedModel == null || state.isLoadingModel || state.isUnloadingModel) return
+        _uiState.update { it.copy(isUnloadingModel = true) }
+        engine.cancelGeneration()
+        generationJob?.cancel()
+        draftCountJob?.cancel()
+        viewModelScope.launch {
+            generationJob?.join()
+            engine.unloadModel()
+            _uiState.update {
+                it.copy(
+                    isUnloadingModel = false,
+                    isGenerating = false,
+                    loadedModel = null,
+                    messages = emptyList(),
+                    tokenStats = TokenStats(contextMaxTokens = it.config.nCtx)
+                )
+            }
+            refreshRamOnce()
+            _events.tryEmit("Модель выгружена из NPU")
+        }
+    }
+
     fun cancelActiveTask() {
         engine.cancelGeneration()
     }
@@ -225,7 +251,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _events.tryEmit("Сначала выберите файл модели .gguf.")
             return
         }
-        if (cur.isGenerating || cur.isLoadingModel) {
+        if (cur.isGenerating || cur.isLoadingModel || cur.isUnloadingModel) {
             return
         }
 
