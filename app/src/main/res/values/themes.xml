@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.NpuLlamaChat" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/npu_primary</item>
+        <item name="colorOnPrimary">@color/npu_on_primary</item>
+        <item name="colorPrimaryContainer">@color/npu_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/npu_on_primary_container</item>
+        <item name="colorSecondary">@color/npu_secondary</item>
+        <item name="colorSecondaryContainer">@color/npu_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/npu_on_secondary_container</item>
+    </style>
+</resources>

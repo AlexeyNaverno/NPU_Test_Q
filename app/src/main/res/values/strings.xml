@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NPU Llama Chat</string>
+
+    <string name="action_select_gguf">Выбрать .gguf</string>
+    <string name="action_change_gguf">Сменить .gguf</string>
+    <string name="action_clear_chat">Очистить чат</string>
+    <string name="action_model_settings">Параметры модели</string>
+    <string name="action_send">Отправить</string>
+    <string name="action_stop">Стоп</string>
+    <string name="action_retry_npu">Повторить проверку NPU</string>
+
+    <string name="label_no_model_loaded">Модель .gguf не выбрана</string>
+    <string name="hint_chat_input">Сообщение для модели на Hexagon NPU…</string>
+    <string name="empty_title">Локальный чат на Qualcomm Hexagon NPU</string>
+
+    <string name="settings_title">Конфигурация модели и Hexagon NPU</string>
+    <string name="settings_subtitle">Только ОЗУ текущей сессии • Вычисления строго на NPU (HTP0)</string>
+    <string name="settings_max_context">Макс. размер контекста (токенов)</string>
+    <string name="settings_max_new_tokens">Макс. новых токенов ответа</string>
+    <string name="settings_batch_size">Размер батча предзаполнения (n_batch)</string>
+    <string name="settings_sampling_header">Параметры генерации (сэмплинг)</string>
+    <string name="settings_npu_header">Аппаратный профиль Qualcomm Hexagon NPU</string>
+    <string name="settings_system_prompt">Системная инструкция (System Prompt)</string>
+    <string name="settings_reset">Сбросить</string>
+    <string name="settings_apply">Применить</string>
+</resources>
