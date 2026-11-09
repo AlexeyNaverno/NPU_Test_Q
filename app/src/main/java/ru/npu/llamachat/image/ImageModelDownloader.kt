@@ -16,8 +16,21 @@ internal object ImageModelDownloader {
         return root.isDirectory && model.files.all { File(root, it.path).let { f -> f.isFile && f.length() == it.bytes } }
     }
 
+    /** После прерывания между переименованиями восстанавливаем единственный старый пакет. */
+    fun recoverBackup(context: Context, model: ImageModel) = recoverBackupIn(context.filesDir, model)
+
+    fun recoverBackupIn(root: File, model: ImageModel) {
+        val target = File(root, model.folder)
+        if (!target.exists()) {
+            val backups = root.listFiles()?.filter { it.isDirectory && it.name.startsWith(".${model.folder}-old-") }.orEmpty()
+            require(backups.size <= 1) { "Найдено несколько резервных копий модели; восстановление требует ручной проверки" }
+            if (backups.size == 1) check(backups[0].renameTo(target)) { "Не удалось восстановить предыдущую модель" }
+        }
+    }
+
     fun download(context: Context, model: ImageModel, checkCancelled: () -> Unit, progress: (Long, Long) -> Unit): File {
         require(model in ImageModelCatalog.models)
+        recoverBackup(context, model)
         require(context.filesDir.usableSpace >= model.totalBytes + 64L * 1024 * 1024) {
             "Недостаточно свободного места: необходимо ещё около ${(model.totalBytes / 1024 / 1024) + 64} МиБ"
         }

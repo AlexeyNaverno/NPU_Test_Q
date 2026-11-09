@@ -126,12 +126,18 @@ class MainActivity : AppCompatActivity() {
                     if (model == ImageModelCatalog.anything) " Внимание: NPU-совместимость Anything V5 не подтверждена." else "")
                 .setNegativeButton("Отмена", null).setPositiveButton("Скачать") { _, _ -> imageViewModel.downloadModel() }.show()
         }
+        binding.btnImageDelete.setOnClickListener {
+            val model = ImageModelCatalog.models[imageViewModel.state.value.selectedModel]
+            MaterialAlertDialogBuilder(this).setTitle("Удалить ${model.title}?")
+                .setMessage("Файлы модели и незавершённые загрузки будут удалены из памяти приложения.")
+                .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> imageViewModel.deleteModel() }.show()
+        }
         binding.btnImageImport.setOnClickListener { pickImageFolder.launch(null) }
         binding.btnImageGenerate.setOnClickListener {
             val steps = binding.etImageSteps.text?.toString()?.toIntOrNull()
             val seedText = binding.etImageSeed.text?.toString().orEmpty().trim()
             val seed = if (seedText.isEmpty()) java.security.SecureRandom().nextLong() else seedText.toLongOrNull()
-            val guidance = if (imageViewModel.state.value.selectedModel == 0) 1f else binding.etImageGuidance.text?.toString()?.toFloatOrNull()
+            val guidance = if (imageViewModel.state.value.selectedModel == 0) 1f else binding.etImageGuidance.text?.toString()?.replace(',', '.')?.toFloatOrNull()
             if (steps == null || seed == null || guidance == null) {
                 Snackbar.make(binding.root, "Проверьте шаги, CFG и seed", Snackbar.LENGTH_LONG).show()
             } else imageViewModel.generate(binding.etImagePrompt.text?.toString().orEmpty(),
@@ -145,6 +151,7 @@ class MainActivity : AppCompatActivity() {
                     binding.tvImageStatus.text = state.status
                     binding.spinnerImageModel.isEnabled = !state.busy
                     binding.btnImageDownload.isEnabled = !state.busy
+                    binding.btnImageDelete.isEnabled = !state.busy
                     binding.btnImageImport.isEnabled = !state.busy && state.selectedModel == 0
                     binding.negativePromptLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE
                     binding.guidanceLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE

@@ -7,8 +7,8 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.android)
 }
 
-val appVersionName = "0.0.3"
-val appVersionCode = 3
+val appVersionName = "0.0.4"
+val appVersionCode = 4
 
 val llamaTag: String = providers.gradleProperty("llamaSnapdragonTag").orElse("b12211").get()
 val customSdkProp: String? = providers.gradleProperty("llamaSnapdragonSdkDir").orNull

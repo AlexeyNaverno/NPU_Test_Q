@@ -14,6 +14,7 @@ internal object DreamShaperPackageImporter {
 
     /** Дорогостоящая операция; вызывается в IO-потоке и только с эксклюзивной блокировкой генерации. */
     fun import(context: Context, tree: Uri, checkCancelled: () -> Unit, progress: (Long, Long) -> Unit): File {
+        ImageModelDownloader.recoverBackup(context, ImageModelCatalog.dreamShaper)
         val resolver = context.contentResolver
         val rootId = DocumentsContract.getTreeDocumentId(tree)
         val stage = File(context.filesDir, ".$FOLDER-${UUID.randomUUID()}")

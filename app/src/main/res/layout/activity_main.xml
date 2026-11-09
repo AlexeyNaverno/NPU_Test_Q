@@ -387,6 +387,11 @@
                 android:layout_height="wrap_content"
                 android:text="Скачать выбранную модель" />
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnImageDelete"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Удалить выбранную модель" />
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnImageImport"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

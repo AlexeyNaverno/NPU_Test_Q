@@ -75,6 +75,28 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deleteModel() {
+        if (_state.value.busy) return
+        val model = ImageModelCatalog.models[_state.value.selectedModel]
+        _state.update { it.copy(busy = true, status = "Удаление модели…") }
+        job = viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val root = ImageModelDownloader.directory(app, model)
+                    check(!root.exists() || root.deleteRecursively()) { "Не удалось удалить модель" }
+                    val prefixes = listOf(".${model.folder}-download-", ".${model.folder}-old-")
+                    app.filesDir.listFiles()?.filter { f -> prefixes.any { f.name.startsWith(it) } }
+                        ?.forEach { check(it.deleteRecursively()) { "Не удалось удалить временные файлы" } }
+                }
+                _state.update { it.copy(installed = false, status = "Модель удалена") }
+            } catch (e: Exception) {
+                _state.update { it.copy(status = "Ошибка удаления: ${e.message ?: "неизвестная ошибка"}") }
+            } finally {
+                _state.update { it.copy(busy = false, installed = ImageModelDownloader.isInstalled(app, model)) }
+            }
+        }
+    }
+
     fun importModel(uri: Uri) {
         if (_state.value.busy || _state.value.selectedModel != 0) return
         _state.update { it.copy(busy = true, status = "Импорт модели…") }
