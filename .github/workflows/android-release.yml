@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   build-apk:
-    name: Build Gradle APK (Hexagon NPU v0.0.2)
+    name: Build Gradle APK (Hexagon NPU)
     runs-on: ubuntu-26.04
     timeout-minutes: 30
 
@@ -79,6 +79,9 @@ jobs:
           grep -q "lib/arm64-v8a/libllama.so" /tmp/apk_contents.txt
           grep -q "lib/arm64-v8a/libggml-hexagon.so" /tmp/apk_contents.txt
           grep -q "lib/arm64-v8a/libggml-htp-v73.so" /tmp/apk_contents.txt
+          grep -q "lib/arm64-v8a/libQnnHtp.so" /tmp/apk_contents.txt
+          grep -qi "lib/arm64-v8a/libQnnHtpV73Skel.so" /tmp/apk_contents.txt
+          grep -q "lib/arm64-v8a/libonnxruntime.so" /tmp/apk_contents.txt
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/NPU_Llama_Chat-v${APP_VERSION}-release.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "dist/NPU_Llama_Chat-v${APP_VERSION}-debug.apk"
