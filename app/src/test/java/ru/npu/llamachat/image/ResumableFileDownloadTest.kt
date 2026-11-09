@@ -56,6 +56,20 @@ class ResumableFileDownloadTest {
         assertArrayEquals(bytes, file.readBytes())
     }
 
+    @Test fun `large files are requested in bounded chunks`() {
+        val data = ByteArray(8 * 1024 * 1024 + 23) { (it % 251).toByte() }
+        val hash = MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it.toInt() and 255) }
+        val large = ModelFile("large", data.size.toLong(), hash)
+        val ranges = mutableListOf<Pair<Long, Long>>()
+        val file = tmp.newFile()
+        ResumableFileDownload.download(large, file, { start, end ->
+            ranges.add(start to end)
+            response(206, "bytes $start-$end/${data.size}", ByteArrayInputStream(data.copyOfRange(start.toInt(), end.toInt() + 1)))
+        }, {}, {}, noWait)
+        assertEquals(listOf(0L to (8L * 1024 * 1024 - 1), (8L * 1024 * 1024) to (data.size - 1L)), ranges)
+        assertArrayEquals(data, file.readBytes())
+    }
+
     @Test fun `server ignoring range restarts without appending duplicate data`() {
         val file = tmp.newFile().apply { writeBytes(bytes.copyOf(3)) }
         ResumableFileDownload.download(entry, file, { _, _ -> response(200, null, ByteArrayInputStream(bytes)) }, {}, {}, noWait)
