@@ -1,0 +1,28 @@
+name: Check v0.0.5 release signing
+on:
+  push:
+    branches: ["arena/**"]
+    paths: [".github/workflows/check-v005-signature.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Inspect previous APK certificate and runner state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.0.5 --repo "$GITHUB_REPOSITORY" --pattern 'NPU_Llama_Chat-v0.0.5-release.apk' --dir /tmp
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          test -x "$APKSIGNER"
+          FINGERPRINT=$("$APKSIGNER" verify --print-certs /tmp/NPU_Llama_Chat-v0.0.5-release.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          test -n "$FINGERPRINT"
+          echo "::notice title=Подпись релиза v0.0.5::SHA-256 сертификата: $FINGERPRINT"
+          if [ -f "$HOME/.android/debug.keystore" ]; then
+            echo "::notice title=Ключ в новом runner::Файл debug.keystore уже существует; требуется отдельная проверка совпадения сертификатов."
+            keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | grep -E 'SHA256:' | sed 's/^/::notice title=Сертификат нового runner::/'
+          else
+            echo "::warning title=Ключ в новом runner::В новом runner debug.keystore отсутствует; Gradle создаёт новый случайный debug-ключ, и он не подходит для обновления поверх v0.0.5."
+          fi

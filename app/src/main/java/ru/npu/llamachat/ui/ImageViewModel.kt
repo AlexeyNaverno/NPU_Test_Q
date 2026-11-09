@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.npu.llamachat.NpuApplication
 import ru.npu.llamachat.image.DreamShaperLcm
+import ru.npu.llamachat.image.GenerationCrashMarker
 import ru.npu.llamachat.image.AnythingV5
 import ru.npu.llamachat.image.DreamShaperPackageImporter
 import ru.npu.llamachat.image.ImageModelCatalog
@@ -34,13 +35,19 @@ data class ImageUiState(
 
 class ImageViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NpuApplication
-    private val _state = MutableStateFlow(ImageUiState(installed = ImageModelDownloader.isInstalled(app, ImageModelCatalog.dreamShaper)))
+    private val diagnostics = GenerationCrashMarker(app)
+    private val previousExit = diagnostics.takePreviousExit()
+    private val _state = MutableStateFlow(ImageUiState(
+        installed = ImageModelDownloader.isInstalled(app, ImageModelCatalog.dreamShaper),
+        status = previousExit ?: "Выберите папку модели DreamShaper 8 LCM v73"
+    ))
     val state = _state.asStateFlow()
     private var job: Job? = null
 
     fun selectModel(index: Int) {
         if (_state.value.busy || index !in ImageModelCatalog.models.indices) return
         val model = ImageModelCatalog.models[index]
+        if (_state.value.selectedModel == index && previousExit != null) return
         _state.update { it.copy(selectedModel = index, canGenerate = model.canGenerate,
             installed = ImageModelDownloader.isInstalled(app, model),
             status = if (index == 0) "DreamShaper LCM: рекомендуются 4 шага; совместимость NPU не проверена."
@@ -151,12 +158,15 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
         job = viewModelScope.launch {
             try {
                 val bitmap = withContext(Dispatchers.IO) {
+                    diagnostics.start()
                     val context = currentCoroutineContext()
                     val check = { context.ensureActive() }
                     val onStep: (Int, Int) -> Unit = { current, total -> _state.update { it.copy(status = "Шаг $current из $total") } }
                     val rgb = if (model == ImageModelCatalog.dreamShaper) {
-                        DreamShaperLcm.generate(app, ImageModelDownloader.directory(app, model), prompt, steps, seed, check, onStep)
+                        DreamShaperLcm.generate(app, ImageModelDownloader.directory(app, model), prompt, steps, seed, check, onStep,
+                            onStage = { stage -> diagnostics.stage(stage); _state.update { it.copy(status = stage) } })
                     } else {
+                        diagnostics.stage("Anything V5: загрузка и запуск графов")
                         AnythingV5.generate(app, ImageModelDownloader.directory(app, model), prompt, negativePrompt,
                             steps, guidance, seed, check, onStep)
                     }
@@ -172,9 +182,12 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(bitmap = bitmap, status = "Готово. Seed: $seed") }
             } catch (e: CancellationException) {
                 _state.update { it.copy(status = "Генерация отменена") }
+            } catch (e: LinkageError) {
+                _state.update { it.copy(status = "Не удалось загрузить библиотеку NPU: ${e.message ?: e.javaClass.simpleName}") }
             } catch (e: Exception) {
                 _state.update { it.copy(status = "Ошибка генерации: ${e.message ?: "неизвестная ошибка"}") }
             } finally {
+                diagnostics.finish()
                 app.session.releaseImageNpu()
                 _state.update { it.copy(busy = false) }
             }
