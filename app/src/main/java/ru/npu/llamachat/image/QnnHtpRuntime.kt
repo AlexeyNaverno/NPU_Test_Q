@@ -46,7 +46,8 @@ object QnnHtpRuntime {
      * По умолчанию запрещает CPU fallback. Исключение для проверенных по SHA256
      * обёрток DreamShaper позволяет ORT назначить CPU только внешние узлы Q/DQ.
      */
-    fun open(context: Context, modelFile: File, allowKnownQuantizationOnCpu: Boolean = false): HtpSession {
+    fun open(context: Context, modelFile: File, allowKnownQuantizationOnCpu: Boolean = false,
+             symbolicDimensions: Map<String, Long> = emptyMap()): HtpSession {
         require(modelFile.isFile && modelFile.canRead() && modelFile.extension.equals("onnx", true)) {
             "Не найден читаемый ONNX файл: ${modelFile.name}"
         }
@@ -59,6 +60,10 @@ object QnnHtpRuntime {
             // В закреплённых обёртках вне EPContext есть только Q/DQ. CPU разрешён
             // лишь для них; сам EPContext может выполняться только через QNN HTP.
             if (!allowKnownQuantizationOnCpu) options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
+            symbolicDimensions.forEach { (name, value) ->
+                require(name.isNotBlank() && value > 0)
+                options.setSymbolicDimensionValue(name, value)
+            }
             options.addExecutionProvider(devices, mapOf("backend_type" to "htp"))
             val session = env.createSession(modelFile.absolutePath, options)
             return HtpSession(session, options)

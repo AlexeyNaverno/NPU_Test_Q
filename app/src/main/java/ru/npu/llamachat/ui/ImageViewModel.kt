@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.npu.llamachat.NpuApplication
 import ru.npu.llamachat.image.DreamShaperLcm
+import ru.npu.llamachat.image.AnythingV5
 import ru.npu.llamachat.image.DreamShaperPackageImporter
 import ru.npu.llamachat.image.ImageModelCatalog
 import ru.npu.llamachat.image.ImageModelDownloader
@@ -42,8 +43,8 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
         val model = ImageModelCatalog.models[index]
         _state.update { it.copy(selectedModel = index, canGenerate = model.canGenerate,
             installed = ImageModelDownloader.isInstalled(app, model),
-            status = if (model.canGenerate) "DreamShaper: 4 шага рекомендуются; совместимость NPU не проверена."
-            else "Anything V5: загрузка доступна; генерация пока не подключена. Исходная модель рассчитана на CPU.") }
+            status = if (index == 0) "DreamShaper LCM: рекомендуются 4 шага; совместимость NPU не проверена."
+            else "Anything V5: экспериментальная попытка HTP для UNet/VAE, CLIP на CPU. Исходный комплект рассчитан на CPU и может не запуститься на NPU.") }
     }
 
     fun downloadModel() {
@@ -63,9 +64,7 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
-                _state.update { it.copy(installed = true, status = if (model.canGenerate)
-                    "Модель скачана. Выгрузите модель чата перед генерацией."
-                    else "Модель скачана. Генерация Anything V5 пока не подключена.") }
+                _state.update { it.copy(installed = true, status = "Модель скачана. Выгрузите модель чата перед генерацией.") }
             } catch (e: CancellationException) {
                 _state.update { it.copy(status = "Загрузка отменена") }
             } catch (e: Exception) {
@@ -103,10 +102,14 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun generate(prompt: String, steps: Int, seed: Long) {
+    fun generate(prompt: String, negativePrompt: String, steps: Int, guidance: Float, seed: Long) {
         if (_state.value.busy) return
         if (!_state.value.canGenerate) { _state.update { it.copy(status = "Генерация Anything V5 пока не подключена") }; return }
-        if (steps !in 1..50) { _state.update { it.copy(status = "Число шагов LCM: от 1 до 50") }; return }
+        val model = ImageModelCatalog.models[_state.value.selectedModel]
+        val maxSteps = if (model == ImageModelCatalog.dreamShaper) 50 else 100
+        if (steps !in 1..maxSteps || !guidance.isFinite() || guidance !in 1f..20f) {
+            _state.update { it.copy(status = "Допустимо шагов: 1–$maxSteps; CFG: 1–20") }; return
+        }
         if (!_state.value.installed) { _state.update { it.copy(status = "Сначала импортируйте модель") }; return }
         if (prompt.isBlank()) { _state.update { it.copy(status = "Введите описание изображения") }; return }
         if (!app.session.tryAcquireImageNpu()) {
@@ -118,9 +121,14 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val bitmap = withContext(Dispatchers.IO) {
                     val context = currentCoroutineContext()
-                    val rgb = DreamShaperLcm.generate(app, DreamShaperPackageImporter.installedDirectory(app), prompt, steps, seed,
-                        checkCancelled = { context.ensureActive() },
-                        onStep = { current, total -> _state.update { it.copy(status = "Шаг $current из $total") } })
+                    val check = { context.ensureActive() }
+                    val onStep: (Int, Int) -> Unit = { current, total -> _state.update { it.copy(status = "Шаг $current из $total") } }
+                    val rgb = if (model == ImageModelCatalog.dreamShaper) {
+                        DreamShaperLcm.generate(app, ImageModelDownloader.directory(app, model), prompt, steps, seed, check, onStep)
+                    } else {
+                        AnythingV5.generate(app, ImageModelDownloader.directory(app, model), prompt, negativePrompt,
+                            steps, guidance, seed, check, onStep)
+                    }
                     context.ensureActive()
                     val colors = IntArray(512 * 512) { i ->
                         val r = (rgb[i * 3] * 255f).roundToInt().coerceIn(0, 255)

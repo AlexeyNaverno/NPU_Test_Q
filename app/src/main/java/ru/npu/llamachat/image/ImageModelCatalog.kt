@@ -21,7 +21,7 @@ internal object ImageModelCatalog {
             ModelFile("tokenizer/vocab.json", 1059962, "469be27c5c010538f845f518c4f5e8574c78f7c8", true),
             ModelFile("tokenizer/merges.txt", 524619, "76e821f1b6f0a9709293c3b6b51ed90980b3166b", true)
         ), true)
-    val anything = ImageModel("anything-v5", "Anything V5 INT8 — тяжёлый (пока без генерации)", "xZekki/anything-v5-int8-onnx",
+    val anything = ImageModel("anything-v5", "Anything V5 INT8 — тяжёлый (экспериментальный NPU)", "xZekki/anything-v5-int8-onnx",
         "43d5660428f9d40d34571b3ec191b35e0723efa0", "anything-v5-int8", listOf(
             ModelFile("text_encoder/model.onnx", 419223, "5e513044b9f677bd9adeba5f5dde60ec19d615cef7dfeb4a160a52371acb7c3e"),
             ModelFile("text_encoder/model_int8.onnx.data", 123424512, "834b5b73dacdadce6c147920451fd267fd62f3aa1d00ef2092c14648ddc35a66"),
@@ -31,6 +31,6 @@ internal object ImageModelCatalog {
             ModelFile("vae_encoder/model.onnx", 136756675, "cff2250c3c62b1471e0687e4a2aa9005017113e4adfd0e210746854584125be3"),
             ModelFile("tokenizer/merges.txt", 573514, "1876098c4dcbf22af518537b3bd63102a05e1313", true),
             ModelFile("tokenizer/vocab.json", 1109372, "521b2c5def638d17b1e463ce25597140a1720005", true)
-        ), false)
+        ), true)
     val models = listOf(dreamShaper, anything)
 }

@@ -373,7 +373,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Модели занимают более 1 ГБ каждая. Условия OpenRAIL распространяются на модель. DreamShaper для 8 Gen 2 может не загрузиться на 8s Gen 3. Перед генерацией выгрузите модель чата. Anything V5 пока можно только скачать: генерация и NPU для неё ещё не подключены."
+                android:text="Модели занимают более 1 ГБ каждая. Условия OpenRAIL распространяются на модель. DreamShaper для 8 Gen 2 может не загрузиться на 8s Gen 3. Перед генерацией выгрузите модель чата. Anything V5: CLIP на CPU, UNet/VAE — попытка на NPU без CPU fallback; графы для CPU могут не загрузиться на NPU."
                 android:textAppearance="?attr/textAppearanceBodySmall" />
             <Spinner
                 android:id="@+id/spinnerImageModel"
@@ -412,13 +412,37 @@
             <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Шаги LCM (1–50; рекомендуется 4)">
+                android:hint="Шаги (LCM 1–50, SD 1–100)">
                 <com.google.android.material.textfield.TextInputEditText
                     android:id="@+id/etImageSteps"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:inputType="number"
                     android:text="4" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/negativePromptLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Негативное описание (Anything V5)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etNegativePrompt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textMultiLine"
+                    android:minLines="1" android:maxLines="3" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/guidanceLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="CFG (Anything V5: 1–20)">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImageGuidance"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberDecimal"
+                    android:text="7.5" />
             </com.google.android.material.textfield.TextInputLayout>
             <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"

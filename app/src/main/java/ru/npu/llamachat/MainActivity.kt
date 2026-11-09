@@ -112,7 +112,10 @@ class MainActivity : AppCompatActivity() {
             ImageModelCatalog.models.map { it.title })
         binding.spinnerImageModel.setSelection(imageViewModel.state.value.selectedModel)
         binding.spinnerImageModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { imageViewModel.selectModel(position) }
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position != imageViewModel.state.value.selectedModel) binding.etImageSteps.setText(if (position == 0) "4" else "30")
+                imageViewModel.selectModel(position)
+            }
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
         binding.btnImageDownload.setOnClickListener {
@@ -120,7 +123,7 @@ class MainActivity : AppCompatActivity() {
             val mib = model.totalBytes / (1024 * 1024)
             MaterialAlertDialogBuilder(this).setTitle("Скачать ${model.title}?")
                 .setMessage("Будет скачано около $mib МиБ во внутреннюю память приложения. Нужны интернет и свободное место; при замене старой копии нужно место для обеих. Условия CreativeML OpenRAIL-M распространяются на модель." +
-                    if (!model.canGenerate) " Внимание: генерация Anything V5 ещё не подключена." else "")
+                    if (model == ImageModelCatalog.anything) " Внимание: NPU-совместимость Anything V5 не подтверждена." else "")
                 .setNegativeButton("Отмена", null).setPositiveButton("Скачать") { _, _ -> imageViewModel.downloadModel() }.show()
         }
         binding.btnImageImport.setOnClickListener { pickImageFolder.launch(null) }
@@ -128,9 +131,11 @@ class MainActivity : AppCompatActivity() {
             val steps = binding.etImageSteps.text?.toString()?.toIntOrNull()
             val seedText = binding.etImageSeed.text?.toString().orEmpty().trim()
             val seed = if (seedText.isEmpty()) java.security.SecureRandom().nextLong() else seedText.toLongOrNull()
-            if (steps == null || seed == null) {
-                Snackbar.make(binding.root, "Проверьте число шагов и seed", Snackbar.LENGTH_LONG).show()
-            } else imageViewModel.generate(binding.etImagePrompt.text?.toString().orEmpty(), steps, seed)
+            val guidance = if (imageViewModel.state.value.selectedModel == 0) 1f else binding.etImageGuidance.text?.toString()?.toFloatOrNull()
+            if (steps == null || seed == null || guidance == null) {
+                Snackbar.make(binding.root, "Проверьте шаги, CFG и seed", Snackbar.LENGTH_LONG).show()
+            } else imageViewModel.generate(binding.etImagePrompt.text?.toString().orEmpty(),
+                binding.etNegativePrompt.text?.toString().orEmpty(), steps, guidance, seed)
         }
         binding.btnImageCancel.setOnClickListener { imageViewModel.cancel() }
         binding.btnImageSave.setOnClickListener { saveImage.launch("image.png") }
@@ -141,6 +146,8 @@ class MainActivity : AppCompatActivity() {
                     binding.spinnerImageModel.isEnabled = !state.busy
                     binding.btnImageDownload.isEnabled = !state.busy
                     binding.btnImageImport.isEnabled = !state.busy && state.selectedModel == 0
+                    binding.negativePromptLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE
+                    binding.guidanceLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE
                     binding.btnImageGenerate.isEnabled = !state.busy && state.installed && state.canGenerate
                     binding.btnImageCancel.isEnabled = state.busy
                     binding.btnImageSave.isEnabled = !state.busy && state.bitmap != null
