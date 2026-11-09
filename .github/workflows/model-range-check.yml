@@ -1,0 +1,36 @@
+name: Verify model download ranges
+on:
+  push:
+    branches: ["arena/**"]
+    paths: [".github/workflows/model-range-check.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check pinned model files over HTTPS
+        run: |
+          python - <<'PY'
+          import urllib.request, urllib.parse
+          files = [
+            ('latentdivergence/dreamshaper8-lcm-npu-8gen2','6a2e524fe1e74f8050ea169f6cec1f725f956d90','unet_qairt_context.bin',882466816),
+            ('xZekki/anything-v5-int8-onnx','43d5660428f9d40d34571b3ec191b35e0723efa0','unet/model_int8.onnx.data',860852480),
+          ]
+          for repo,revision,path,size in files:
+            for start in [0,8192]:
+              request=urllib.request.Request(f'https://huggingface.co/{repo}/resolve/{revision}/{path}', headers={'Range':f'bytes={start}-{start+15}','Accept-Encoding':'identity'})
+              with urllib.request.urlopen(request,timeout=90) as r:
+                host=urllib.parse.urlparse(r.url).hostname
+                assert host == 'huggingface.co' or host.endswith('.huggingface.co') or host == 'hf.co' or host.endswith('.hf.co'), host
+                if r.status == 206:
+                  assert r.headers['Content-Range'] == f'bytes {start}-{start+15}/{size}', r.headers['Content-Range']
+                  assert len(r.read(17)) == 16
+                elif r.status == 200:
+                  print(f'::warning::{repo}/{path} игнорирует Range: докачка файла начнётся сначала')
+                else:
+                  raise RuntimeError(f'Unexpected HTTP {r.status}')
+                print(f'::notice::{repo}/{path}: HTTP {r.status}, диапазон {start}, хост {host}')
+          PY

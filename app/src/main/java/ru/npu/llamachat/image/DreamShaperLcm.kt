@@ -36,23 +36,31 @@ internal object DreamShaperLcm {
         steps: Int = 4,
         seed: Long,
         checkCancelled: () -> Unit = {},
-        onStep: (Int, Int) -> Unit = { _, _ -> }
+        onStep: (Int, Int) -> Unit = { _, _ -> },
+        onStage: (String) -> Unit = {}
     ): FloatArray {
         require(steps in 1..50) { "Количество шагов LCM должно быть от 1 до 50" }
+        onStage("загрузка токенизатора")
         val tokenizer = ClipTokenizerFiles.load(File(directory, "tokenizer"))
         var unet: QnnUInt16Graph? = null
         try {
             val pipeline = LcmImagePipeline(
-                textEncoder = { text -> encodeText(context, File(directory, "text_encoder.onnx"), tokenizer.tokenize(text)) },
+                textEncoder = { text ->
+                    onStage("CLIP: загрузка и запуск QNN")
+                    encodeText(context, File(directory, "text_encoder.onnx"), tokenizer.tokenize(text))
+                },
                 unet = { latent, timestep, embedding ->
+                    onStage(if (unet == null) "UNet: загрузка QNN" else "UNet: вычисление")
                     val graph = unet ?: QnnUInt16Graph.open(context, File(directory, "unet.onnx"),
                         listOf(unetTime, unetLatent, unetText), unetOutput, allowKnownQuantizationOnCpu = true).also { unet = it }
+                    onStage("UNet: вычисление")
                     graph.run(mapOf("timestep" to floatArrayOf(timestep.toFloat()), "latent" to latent, "text_emb" to embedding))
                 },
                 vae = { latent ->
                     unet?.close()
                     unet = null
                     checkCancelled()
+                    onStage("VAE: загрузка и запуск QNN")
                     QnnUInt16Graph.open(context, File(directory, "vae.onnx"), listOf(vaeInput), vaeOutput, allowKnownQuantizationOnCpu = true).use {
                         it.run(mapOf("latent" to latent))
                     }

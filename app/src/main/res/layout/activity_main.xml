@@ -395,7 +395,7 @@
                 android:id="@+id/btnImageImport"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Импортировать папку модели" />
+                android:text="Импортировать готовую папку модели" />
             <TextView
                 android:id="@+id/tvImageStatus"
                 android:layout_width="match_parent"

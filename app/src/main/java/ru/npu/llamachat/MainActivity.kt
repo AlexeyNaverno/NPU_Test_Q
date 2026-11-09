@@ -47,6 +47,9 @@ class MainActivity : AppCompatActivity() {
     private val pickImageFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) imageViewModel.importModel(uri)
     }
+    private val pickDownloadDestination = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) imageViewModel.downloadModel(uri)
+    }
     private val saveImage = registerForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
         val bitmap = imageViewModel.state.value.bitmap
         if (uri != null && bitmap != null) lifecycleScope.launch {
@@ -122,14 +125,14 @@ class MainActivity : AppCompatActivity() {
             val model = ImageModelCatalog.models[imageViewModel.state.value.selectedModel]
             val mib = model.totalBytes / (1024 * 1024)
             MaterialAlertDialogBuilder(this).setTitle("Скачать ${model.title}?")
-                .setMessage("Будет скачано около $mib МиБ во внутреннюю память приложения. Нужны интернет и свободное место; при замене старой копии нужно место для обеих. Условия CreativeML OpenRAIL-M распространяются на модель." +
+                .setMessage("Выберите папку для сохранения модели. Приложение запросит доступ только к ней. Около $mib МиБ будет скачано во внутреннюю рабочую копию, затем ещё одна проверенная копия будет записана в выбранную папку. Потребуется место для обеих копий. При сбое нажмите «Скачать» снова. Условия CreativeML OpenRAIL-M распространяются на модель." +
                     if (model == ImageModelCatalog.anything) " Внимание: NPU-совместимость Anything V5 не подтверждена." else "")
-                .setNegativeButton("Отмена", null).setPositiveButton("Скачать") { _, _ -> imageViewModel.downloadModel() }.show()
+                .setNegativeButton("Отмена", null).setPositiveButton("Выбрать папку") { _, _ -> pickDownloadDestination.launch(null) }.show()
         }
         binding.btnImageDelete.setOnClickListener {
             val model = ImageModelCatalog.models[imageViewModel.state.value.selectedModel]
             MaterialAlertDialogBuilder(this).setTitle("Удалить ${model.title}?")
-                .setMessage("Файлы модели и незавершённые загрузки будут удалены из памяти приложения.")
+                .setMessage("Будет удалена только рабочая копия и незавершённая загрузка из памяти приложения. Файлы в выбранной вами папке останутся.")
                 .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> imageViewModel.deleteModel() }.show()
         }
         binding.btnImageImport.setOnClickListener { pickImageFolder.launch(null) }
@@ -152,7 +155,7 @@ class MainActivity : AppCompatActivity() {
                     binding.spinnerImageModel.isEnabled = !state.busy
                     binding.btnImageDownload.isEnabled = !state.busy
                     binding.btnImageDelete.isEnabled = !state.busy
-                    binding.btnImageImport.isEnabled = !state.busy && state.selectedModel == 0
+                    binding.btnImageImport.isEnabled = !state.busy
                     binding.negativePromptLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE
                     binding.guidanceLayout.visibility = if (state.selectedModel == 1) View.VISIBLE else View.GONE
                     binding.btnImageGenerate.isEnabled = !state.busy && state.installed && state.canGenerate

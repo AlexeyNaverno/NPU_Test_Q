@@ -6,18 +6,22 @@ import android.provider.DocumentsContract
 import java.io.File
 import java.util.UUID
 
-/** Импорт только закреплённой ревизии модели через SAF, без доверия именам или размерам из провайдера. */
+/** Импорт закреплённого комплекта через SAF с проверкой каждого файла. */
 internal object DreamShaperPackageImporter {
-    private val entries get() = ImageModelCatalog.dreamShaper.files
-    private const val FOLDER = "dreamshaper8-lcm-v73"
-    fun installedDirectory(context: Context) = File(context.filesDir, FOLDER)
+    fun installedDirectory(context: Context) = ImageModelDownloader.directory(context, ImageModelCatalog.dreamShaper)
 
     /** Дорогостоящая операция; вызывается в IO-потоке и только с эксклюзивной блокировкой генерации. */
-    fun import(context: Context, tree: Uri, checkCancelled: () -> Unit, progress: (Long, Long) -> Unit): File {
-        ImageModelDownloader.recoverBackup(context, ImageModelCatalog.dreamShaper)
+    fun import(context: Context, tree: Uri, model: ImageModel, checkCancelled: () -> Unit, progress: (Long, Long) -> Unit): File {
+        require(model in ImageModelCatalog.models)
+        ImageModelDownloader.recoverBackup(context, model)
+        val entries = model.files
+        val folder = model.folder
+        require(context.filesDir.usableSpace >= model.totalBytes + 64L * 1024 * 1024) {
+            "Для внутренней рабочей копии нужно ещё около ${(model.totalBytes / 1024 / 1024) + 64} МиБ"
+        }
         val resolver = context.contentResolver
         val rootId = DocumentsContract.getTreeDocumentId(tree)
-        val stage = File(context.filesDir, ".$FOLDER-${UUID.randomUUID()}")
+        val stage = File(context.filesDir, ".$folder-${UUID.randomUUID()}")
         check(stage.mkdir()) { "Не удалось создать временную папку модели" }
         val total = entries.sumOf { it.bytes }
         var copied = 0L
@@ -42,8 +46,8 @@ internal object DreamShaperPackageImporter {
                 }
             }
             checkCancelled()
-            val target = installedDirectory(context)
-            val backup = File(context.filesDir, ".$FOLDER-old-${UUID.randomUUID()}")
+            val target = ImageModelDownloader.directory(context, model)
+            val backup = File(context.filesDir, ".$folder-old-${UUID.randomUUID()}")
             if (target.exists()) check(target.renameTo(backup)) { "Не удалось заменить старую модель" }
             if (!stage.renameTo(target)) {
                 if (backup.exists()) check(backup.renameTo(target)) { "Не удалось восстановить старую модель" }

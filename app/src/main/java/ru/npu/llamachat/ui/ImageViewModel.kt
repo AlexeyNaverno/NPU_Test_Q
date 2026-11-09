@@ -2,6 +2,7 @@ package ru.npu.llamachat.ui
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,6 +18,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.npu.llamachat.NpuApplication
 import ru.npu.llamachat.image.DreamShaperLcm
+import ru.npu.llamachat.image.GenerationCrashMarker
+import ru.npu.llamachat.image.ExternalModelStorage
 import ru.npu.llamachat.image.AnythingV5
 import ru.npu.llamachat.image.DreamShaperPackageImporter
 import ru.npu.llamachat.image.ImageModelCatalog
@@ -34,42 +37,81 @@ data class ImageUiState(
 
 class ImageViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NpuApplication
-    private val _state = MutableStateFlow(ImageUiState(installed = ImageModelDownloader.isInstalled(app, ImageModelCatalog.dreamShaper)))
+    private val diagnostics = GenerationCrashMarker(app)
+    private val previousExit = diagnostics.takePreviousExit()
+    private val _state = MutableStateFlow(ImageUiState(
+        installed = ImageModelDownloader.isInstalled(app, ImageModelCatalog.dreamShaper),
+        status = previousExit ?: "Выберите папку модели DreamShaper 8 LCM v73"
+    ))
     val state = _state.asStateFlow()
     private var job: Job? = null
 
     fun selectModel(index: Int) {
         if (_state.value.busy || index !in ImageModelCatalog.models.indices) return
         val model = ImageModelCatalog.models[index]
+        if (_state.value.selectedModel == index && previousExit != null) return
         _state.update { it.copy(selectedModel = index, canGenerate = model.canGenerate,
             installed = ImageModelDownloader.isInstalled(app, model),
             status = if (index == 0) "DreamShaper LCM: рекомендуются 4 шага; совместимость NPU не проверена."
             else "Anything V5: экспериментальная попытка HTP для UNet/VAE, CLIP на CPU. Исходный комплект рассчитан на CPU и может не запуститься на NPU.") }
     }
 
-    fun downloadModel() {
+    fun downloadModel(destination: Uri) {
         if (_state.value.busy) return
+        try {
+            app.contentResolver.takePersistableUriPermission(destination,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        } catch (e: SecurityException) {
+            _state.update { it.copy(status = "Нет постоянного доступа на запись в эту папку. Выберите другую.") }
+            return
+        }
         val model = ImageModelCatalog.models[_state.value.selectedModel]
         _state.update { it.copy(busy = true, status = "Подготовка загрузки…") }
         job = viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) {
+                val savedName = withContext(Dispatchers.IO) {
                     val context = currentCoroutineContext()
-                    var previousPercent = -1
-                    ImageModelDownloader.download(app, model, { context.ensureActive() }) { bytes, total ->
-                        val percent = (bytes * 100 / total).toInt()
-                        if (percent != previousPercent) {
-                            previousPercent = percent
-                            _state.update { it.copy(status = "Скачивание: $percent%") }
+                    if (!ImageModelDownloader.isInstalled(app, model)) {
+                        var previousPercent = -1
+                        var currentFile = ""
+                        ImageModelDownloader.download(app, model, { context.ensureActive() },
+                            onFile = { name, index, count ->
+                                currentFile = "Файл $index/$count: $name"
+                                previousPercent = -1
+                                _state.update { it.copy(status = currentFile) }
+                            },
+                            onRetry = { name, attempt -> _state.update { it.copy(status = "Сбой сети, повтор $attempt/4: $name") } },
+                            onVerify = { name -> _state.update { it.copy(status = "Проверка файла: $name") } }
+                        ) { bytes, total ->
+                            val percent = (bytes * 100 / total).toInt()
+                            if (percent != previousPercent) {
+                                previousPercent = percent
+                                _state.update { it.copy(status = "$currentFile — $percent%") }
+                            }
                         }
                     }
+                    context.ensureActive()
+                    var previousPercent = -1
+                    var currentFile = ""
+                    ExternalModelStorage.export(app, destination, model, ImageModelDownloader.directory(app, model),
+                        { context.ensureActive() },
+                        { name -> currentFile = name; _state.update { it.copy(status = "Сохранение: $name") } },
+                        { bytes, total ->
+                            val percent = (bytes * 100 / total).toInt()
+                            if (percent != previousPercent) {
+                                previousPercent = percent
+                                _state.update { it.copy(status = "В выбранную папку: $percent% — $currentFile") }
+                            }
+                        })
                 }
-                _state.update { it.copy(installed = true, status = "Модель скачана. Выгрузите модель чата перед генерацией.") }
+                _state.update { it.copy(installed = true, status = "Готово. Копия модели сохранена в папке $savedName. Выгрузите модель чата перед генерацией.") }
             } catch (e: CancellationException) {
-                _state.update { it.copy(status = "Загрузка отменена") }
+                _state.update { it.copy(status = "Операция отменена. Внутренняя загрузка сохранена; в выбранной папке может остаться неполная копия.") }
             } catch (e: Exception) {
-                _state.update { it.copy(status = "Ошибка загрузки: ${e.message ?: "неизвестная ошибка"}") }
+                _state.update { it.copy(status = "Ошибка загрузки или сохранения: ${e.message ?: "неизвестная ошибка"}. Внутренние данные сохранены; можно повторить.") }
             } finally {
+                runCatching { app.contentResolver.releasePersistableUriPermission(destination,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
                 _state.update { it.copy(busy = false, installed = ImageModelDownloader.isInstalled(app, model)) }
             }
         }
@@ -98,14 +140,15 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun importModel(uri: Uri) {
-        if (_state.value.busy || _state.value.selectedModel != 0) return
+        if (_state.value.busy) return
+        val model = ImageModelCatalog.models[_state.value.selectedModel]
         _state.update { it.copy(busy = true, status = "Импорт модели…") }
         job = viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     val context = currentCoroutineContext()
                     var previousPercent = -1
-                    DreamShaperPackageImporter.import(app, uri, { context.ensureActive() }) { bytes, total ->
+                    DreamShaperPackageImporter.import(app, uri, model, { context.ensureActive() }) { bytes, total ->
                         val percent = (bytes * 100 / total).toInt()
                         if (percent != previousPercent) {
                             previousPercent = percent
@@ -119,7 +162,7 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 _state.update { it.copy(status = "Ошибка импорта: ${e.message ?: "неизвестная ошибка"}") }
             } finally {
-                _state.update { it.copy(busy = false) }
+                _state.update { it.copy(busy = false, installed = ImageModelDownloader.isInstalled(app, model)) }
             }
         }
     }
@@ -142,12 +185,15 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
         job = viewModelScope.launch {
             try {
                 val bitmap = withContext(Dispatchers.IO) {
+                    diagnostics.start()
                     val context = currentCoroutineContext()
                     val check = { context.ensureActive() }
                     val onStep: (Int, Int) -> Unit = { current, total -> _state.update { it.copy(status = "Шаг $current из $total") } }
                     val rgb = if (model == ImageModelCatalog.dreamShaper) {
-                        DreamShaperLcm.generate(app, ImageModelDownloader.directory(app, model), prompt, steps, seed, check, onStep)
+                        DreamShaperLcm.generate(app, ImageModelDownloader.directory(app, model), prompt, steps, seed, check, onStep,
+                            onStage = { stage -> diagnostics.stage(stage); _state.update { it.copy(status = stage) } })
                     } else {
+                        diagnostics.stage("Anything V5: загрузка и запуск графов")
                         AnythingV5.generate(app, ImageModelDownloader.directory(app, model), prompt, negativePrompt,
                             steps, guidance, seed, check, onStep)
                     }
@@ -163,9 +209,12 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(bitmap = bitmap, status = "Готово. Seed: $seed") }
             } catch (e: CancellationException) {
                 _state.update { it.copy(status = "Генерация отменена") }
+            } catch (e: LinkageError) {
+                _state.update { it.copy(status = "Не удалось загрузить библиотеку NPU: ${e.message ?: e.javaClass.simpleName}") }
             } catch (e: Exception) {
                 _state.update { it.copy(status = "Ошибка генерации: ${e.message ?: "неизвестная ошибка"}") }
             } finally {
+                diagnostics.finish()
                 app.session.releaseImageNpu()
                 _state.update { it.copy(busy = false) }
             }

@@ -1,0 +1,36 @@
+name: Check v0.0.5 release signing
+on:
+  push:
+    branches: ["arena/**"]
+    paths: [".github/workflows/check-v005-signature.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Inspect previous APK certificate and runner state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release download v0.0.5 --repo "$GITHUB_REPOSITORY" --pattern 'NPU_Llama_Chat-v0.0.5-release.apk' --dir /tmp; then
+            echo "::error::Не удалось скачать опубликованный APK"; exit 1
+          fi
+          echo "::notice::APK v0.0.5 загружен"
+          APKSIGNER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | sort -V | tail -1)
+          if [ ! -x "$APKSIGNER" ]; then echo "::error::Не найден apksigner"; exit 1; fi
+          echo "::notice::apksigner найден"
+          if ! "$APKSIGNER" verify --print-certs /tmp/NPU_Llama_Chat-v0.0.5-release.apk > /tmp/certinfo.txt; then
+            echo "::error::Не удалось прочитать сертификат APK"; exit 1
+          fi
+          while IFS= read -r line; do echo "::notice title=apksigner::$line"; done < /tmp/certinfo.txt
+          FINGERPRINT=$(sed -n 's/^.*certificate SHA-256 digest: //p' /tmp/certinfo.txt | head -1)
+          if [ -z "$FINGERPRINT" ]; then echo "::error::Не найден SHA-256 сертификата"; exit 1; fi
+          echo "::notice title=Подпись релиза v0.0.5::SHA-256 сертификата: $FINGERPRINT"
+          if [ -f "$HOME/.android/debug.keystore" ]; then
+            echo "::notice title=Ключ в новом runner::Файл debug.keystore уже существует; требуется отдельная проверка совпадения сертификатов."
+            keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | grep -E 'SHA256:' | sed 's/^/::notice title=Сертификат нового runner::/'
+          else
+            echo "::warning title=Ключ в новом runner::В новом runner debug.keystore отсутствует; Gradle создаёт новый случайный debug-ключ, и он не подходит для обновления поверх v0.0.5."
+          fi
