@@ -58,7 +58,7 @@ jobs:
       - name: Run Unit Tests, Lint & Assemble Debug + Release APKs
         run: |
           set -o pipefail
-          if ! ./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log; then
+          if ! ./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log; then
             ERR_SUMMARY=$(grep -E "e: |ERROR:|Exception:|FAILURE:|What went wrong" -A 4 /tmp/gradle-build.log | tail -n 25 | tr '\n' ' ' | cut -c1-900)
             echo "::error title=Gradle Build Error::${ERR_SUMMARY}"
             exit 1
