@@ -8,6 +8,7 @@ import android.view.inputmethod.EditorInfo
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -15,6 +16,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.launch
 import ru.npu.llamachat.databinding.ActivityMainBinding
@@ -22,6 +24,7 @@ import ru.npu.llamachat.ui.ChatAdapter
 import ru.npu.llamachat.ui.ChatUiState
 import ru.npu.llamachat.ui.ChatViewModel
 import ru.npu.llamachat.ui.SettingsBottomSheet
+import ru.npu.llamachat.ui.UiAlertDialogEvent
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -30,6 +33,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val viewModel: ChatViewModel by viewModels()
     private val chatAdapter = ChatAdapter()
+    private var activeAlertDialog: AlertDialog? = null
 
     /**
      * Выбор .gguf файла через системный Storage Access Framework (DocumentsUI) без запроса лишних разрешений.
@@ -155,6 +159,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showDiagnosticDialog(event: UiAlertDialogEvent) {
+        if (isFinishing || isDestroyed) return
+        activeAlertDialog?.dismiss()
+        val builder = MaterialAlertDialogBuilder(this)
+            .setTitle(event.title)
+            .setMessage(event.message)
+            .setPositiveButton("Понятно", null)
+        if (event.offerSettingsAction) {
+            builder.setNeutralButton("Параметры NPU") { _, _ ->
+                openSettingsSheet()
+            }
+        }
+        activeAlertDialog = builder.show()
+    }
+
     private fun observeViewModel() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -166,6 +185,11 @@ class MainActivity : AppCompatActivity() {
                 launch {
                     viewModel.events.collect { message ->
                         Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+                    }
+                }
+                launch {
+                    viewModel.alertDialogs.collect { dialogEvent ->
+                        showDiagnosticDialog(dialogEvent)
                     }
                 }
             }
@@ -182,8 +206,9 @@ class MainActivity : AppCompatActivity() {
             }
             npu.ready -> {
                 val archStr = if (npu.hexagonArch > 0) "v${npu.hexagonArch}" else "HTP"
+                val engineMode = if (npu.hmxEnabled) "HMX+HVX" else "HVX"
                 binding.tvNpuBadge.text =
-                    "NPU АКТИВЕН • ${npu.socReport.marketingName} • ${npu.activeDevices} ($archStr)"
+                    "NPU АКТИВЕН • ${npu.socReport.marketingName} • ${npu.activeDevices} ($archStr $engineMode)"
                 binding.cardNpuBlockedBanner.visibility = View.GONE
             }
             else -> {
@@ -200,7 +225,7 @@ class MainActivity : AppCompatActivity() {
             binding.progressModelLoad.visibility = View.VISIBLE
             binding.progressModelLoad.setProgressCompat(pct, true)
             binding.tvLoadProgressLabel.visibility = View.VISIBLE
-            binding.tvLoadProgressLabel.text = "Загрузка весов в Hexagon NPU RPCMEM: $pct%"
+            binding.tvLoadProgressLabel.text = "Проверка и загрузка весов в Hexagon NPU RPCMEM: $pct%"
             binding.btnSelectGgufHeader.isEnabled = false
         } else {
             binding.progressModelLoad.visibility = View.GONE
@@ -287,7 +312,9 @@ class MainActivity : AppCompatActivity() {
                 !npu.ready && !state.npuInitializing ->
                     "Устройство не прошло проверку Qualcomm Hexagon NPU. Выполнение на CPU/GPU отключено."
                 model == null ->
-                    "Выберите локальный файл модели .gguf (рекомендуются Q4_0 / Q8_0 / Q4_K_M для Hexagon HTP v73 на Snapdragon 8s Gen 3). История диалога хранится только в ОЗУ и удаляется при закрытии."
+                    "Выберите локальный файл модели .gguf размера 0.5B–3B (до ~2.4 ГБ).\nОптимальное квантование для Hexagon HTP NPU: Q4_0 (int4) или Q8_0 (int8). История хранится только в ОЗУ."
+                model.quantWarning.isNotBlank() ->
+                    "Модель «${model.fileName}» готова на ${model.npuDeviceUsed} (контекст ${model.nCtxActive} ток.).\n💡 ${model.quantWarning}"
                 else ->
                     "Модель «${model.fileName}» готова к работе на ${model.npuDeviceUsed} (макс. контекст ${model.nCtxActive} токенов). Напишите сообщение ниже."
             }
@@ -310,8 +337,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        activeAlertDialog?.dismiss()
+        activeAlertDialog = null
         if (isFinishing) {
-            // При закрытии приложения гарантированно выгружаем буферы Hexagon NPU
             if (ru.npu.llamachat.engine.NpuLlamaBridge.ensureLibrariesLoaded()) {
                 ru.npu.llamachat.engine.NpuLlamaBridge.nativeCancelGeneration()
                 ru.npu.llamachat.engine.NpuLlamaBridge.nativeUnloadModel()

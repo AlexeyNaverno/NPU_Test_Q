@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Тег релиза для публикации APK (например, v0.0.1)"
+        description: "Тег релиза для публикации APK (например, v0.0.2)"
         required: false
         default: ""
 
@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   build-apk:
-    name: Build Gradle APK (Hexagon NPU v0.0.1)
+    name: Build Gradle APK (Hexagon NPU v0.0.2)
     runs-on: ubuntu-26.04
     timeout-minutes: 30
 
@@ -44,16 +44,29 @@ jobs:
           log-accepted-android-sdk-licenses: false
           packages: platform-tools cmake;3.31.6
 
-      - name: Run Unit Tests & Assemble Debug + Release APKs
+      - name: Read appVersionName from app/build.gradle.kts
+        id: meta
+        run: |
+          APP_VERSION=$(grep -oP 'val appVersionName = "\K[^"]+' app/build.gradle.kts)
+          if [ -z "$APP_VERSION" ]; then
+            echo "::error title=Missing Version::Could not extract appVersionName from app/build.gradle.kts"
+            exit 1
+          fi
+          echo "version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building NPU Llama Chat v${APP_VERSION}"
+
+      - name: Run Unit Tests, Lint & Assemble Debug + Release APKs
         run: |
           set -o pipefail
-          if ! ./gradlew testDebugUnitTest assembleDebug assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log; then
+          if ! ./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log; then
             ERR_SUMMARY=$(grep -E "e: |ERROR:|Exception:|FAILURE:|What went wrong" -A 4 /tmp/gradle-build.log | tail -n 25 | tr '\n' ' ' | cut -c1-900)
             echo "::error title=Gradle Build Error::${ERR_SUMMARY}"
             exit 1
           fi
 
       - name: Verify Hexagon HTP v73 (Snapdragon 8s Gen 3) libraries inside Release APK
+        env:
+          APP_VERSION: ${{ steps.meta.outputs.version }}
         run: |
           RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
           if [ ! -f "$RELEASE_APK" ]; then
@@ -67,18 +80,18 @@ jobs:
           grep -q "lib/arm64-v8a/libggml-hexagon.so" /tmp/apk_contents.txt
           grep -q "lib/arm64-v8a/libggml-htp-v73.so" /tmp/apk_contents.txt
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk dist/NPU_Llama_Chat-v0.0.1-release.apk
-          cp app/build/outputs/apk/debug/app-debug.apk dist/NPU_Llama_Chat-v0.0.1-debug.apk
-          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+          cp app/build/outputs/apk/release/app-release.apk "dist/NPU_Llama_Chat-v${APP_VERSION}-release.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/NPU_Llama_Chat-v${APP_VERSION}-debug.apk"
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
 
       - name: Upload APK Artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: NPU_Llama_Chat-v0.0.1-apks
+          name: NPU_Llama_Chat-v${{ steps.meta.outputs.version }}-apks
           path: |
-            dist/NPU_Llama_Chat-v0.0.1-release.apk
-            dist/NPU_Llama_Chat-v0.0.1-debug.apk
+            dist/NPU_Llama_Chat-v${{ steps.meta.outputs.version }}-release.apk
+            dist/NPU_Llama_Chat-v${{ steps.meta.outputs.version }}-debug.apk
             dist/SHA256SUMS.txt
 
       - name: Upload APK Assets to GitHub Release
@@ -86,6 +99,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DISPATCH_TAG: ${{ inputs.release_tag }}
+          APP_VERSION: ${{ steps.meta.outputs.version }}
         run: |
           TARGET_TAG=""
           FORCE_UPLOAD="false"
@@ -96,10 +110,10 @@ jobs:
           elif [[ -n "${DISPATCH_TAG}" ]]; then
             TARGET_TAG="${DISPATCH_TAG}"
             FORCE_UPLOAD="true"
-          elif gh release view v0.0.1 --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            HAS_APK=$(gh release view v0.0.1 --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | grep -c "NPU_Llama_Chat-v0.0.1-release.apk" || true)
+          elif gh release view "v${APP_VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            HAS_APK=$(gh release view "v${APP_VERSION}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | grep -c "NPU_Llama_Chat-v${APP_VERSION}-release.apk" || true)
             if [[ "${HAS_APK}" == "0" ]]; then
-              TARGET_TAG="v0.0.1"
+              TARGET_TAG="v${APP_VERSION}"
               FORCE_UPLOAD="true"
             fi
           fi
@@ -112,8 +126,8 @@ jobs:
                 --generate-notes
             fi
             gh release upload "${TARGET_TAG}" \
-              dist/NPU_Llama_Chat-v0.0.1-release.apk \
-              dist/NPU_Llama_Chat-v0.0.1-debug.apk \
+              "dist/NPU_Llama_Chat-v${APP_VERSION}-release.apk" \
+              "dist/NPU_Llama_Chat-v${APP_VERSION}-debug.apk" \
               dist/SHA256SUMS.txt \
               --clobber \
               --repo "${GITHUB_REPOSITORY}"

@@ -1,18 +1,21 @@
 package ru.npu.llamachat.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelConfigTest {
 
     @Test
-    fun `sanitized never allows zero NPU layers`() {
+    fun `sanitized never allows zero NPU layers and defaults thinking off`() {
         val zeroAttempt = ModelConfig(nNpuLayers = 0).sanitized()
         assertEquals(999, zeroAttempt.nNpuLayers)
+        assertFalse(zeroAttempt.enableThinking)
 
-        val negativeAttempt = ModelConfig(nNpuLayers = -5).sanitized()
+        val negativeAttempt = ModelConfig(nNpuLayers = -5, enableThinking = true).sanitized()
         assertEquals(999, negativeAttempt.nNpuLayers)
+        assertTrue(negativeAttempt.enableThinking)
     }
 
     @Test

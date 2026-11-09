@@ -9,6 +9,7 @@ data class NativeInitResult(
     val hexagonArch: Int,
     val htpDeviceCount: Int,
     val hasV73Skel: Boolean,
+    val hmxEnabled: Boolean,
     val activeDevices: String,
     val hwSummary: String,
     val errorMessage: String
@@ -16,6 +17,7 @@ data class NativeInitResult(
 
 data class NativeModelLoadResult(
     val ok: Boolean,
+    val keptPreviousModel: Boolean,
     val modelDesc: String,
     val quantName: String,
     val modelBytes: Long,
@@ -27,6 +29,7 @@ data class NativeModelLoadResult(
     val htpBufferMib: Double,
     val hostBufferMib: Double,
     val npuDeviceUsed: String,
+    val quantWarning: String,
     val errorMessage: String
 )
 
@@ -98,7 +101,8 @@ object NpuLlamaBridge {
     external fun nativeInitNpu(
         nativeLibDir: String,
         htpDevices: String,
-        powerMode: String
+        powerMode: String,
+        allowFp16Hmx: Boolean
     ): NativeInitResult
 
     external fun nativeLoadModelFromFd(
@@ -118,6 +122,7 @@ object NpuLlamaBridge {
         seed: Int,
         flashAttnMode: Int,
         kvQ8: Boolean,
+        enableThinking: Boolean,
         powerMode: String,
         htpDevices: String,
         systemPrompt: String,
@@ -140,6 +145,7 @@ object NpuLlamaBridge {
         seed: Int,
         flashAttnMode: Int,
         kvQ8: Boolean,
+        enableThinking: Boolean,
         powerMode: String,
         htpDevices: String,
         systemPrompt: String,
@@ -161,6 +167,7 @@ object NpuLlamaBridge {
         seed: Int,
         flashAttnMode: Int,
         kvQ8: Boolean,
+        enableThinking: Boolean,
         powerMode: String,
         htpDevices: String,
         systemPrompt: String
@@ -183,6 +190,7 @@ object NpuLlamaBridge {
         seed: Int,
         flashAttnMode: Int,
         kvQ8: Boolean,
+        enableThinking: Boolean,
         powerMode: String,
         htpDevices: String,
         systemPrompt: String,

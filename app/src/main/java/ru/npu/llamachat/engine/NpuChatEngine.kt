@@ -12,22 +12,35 @@ import ru.npu.llamachat.model.ModelConfig
 import ru.npu.llamachat.model.RamStats
 
 /**
- * Корутинная обёртка над NpuLlamaBridge и SnapdragonNpuDetector.
+ * Корутинная обёртка над NpuLlamaBridge, SnapdragonNpuDetector и NpuMemoryBudgetEvaluator.
  * Гарантирует строгое выполнение исключительно на Qualcomm Hexagon NPU (HTP0)
- * без фоллбэка на CPU или GPU.
+ * без фоллбэка на CPU/GPU и без аварийного завершения (вылета) при выборе слишком больших моделей.
  */
 data class NpuHardwareStatus(
     val ready: Boolean,
     val socReport: SocNpuReport,
     val hexagonArch: Int = 0,
+    val htpDeviceCount: Int = 1,
+    val hmxEnabled: Boolean = false,
     val activeDevices: String = "",
     val hwSummary: String = "",
     val errorMessage: String = ""
 )
 
+class ModelLoadRejectedException(
+    message: String,
+    val keptPreviousModel: Boolean
+) : IllegalStateException(message)
+
 class NpuChatEngine(context: Context) {
 
     private val appContext = context.applicationContext
+
+    @Volatile
+    private var lastHexagonArch: Int = 73
+
+    @Volatile
+    private var lastHtpDeviceCount: Int = 1
 
     suspend fun initializeNpu(config: ModelConfig): NpuHardwareStatus = withContext(Dispatchers.IO) {
         val socReport = SnapdragonNpuDetector.inspectCurrentDevice()
@@ -53,14 +66,21 @@ class NpuChatEngine(context: Context) {
         val initRes = NpuLlamaBridge.nativeInitNpu(
             nativeLibDir = nativeLibDir,
             htpDevices = cleanCfg.htpDevices,
-            powerMode = cleanCfg.powerMode
+            powerMode = cleanCfg.powerMode,
+            allowFp16Hmx = socReport.supportsFp16Hmx
         )
+
+        val resolvedArch = if (initRes.hexagonArch > 0) initRes.hexagonArch else socReport.expectedHexagonArch
+        if (resolvedArch > 0) lastHexagonArch = resolvedArch
+        if (initRes.htpDeviceCount > 0) lastHtpDeviceCount = initRes.htpDeviceCount
 
         if (!initRes.ok) {
             return@withContext NpuHardwareStatus(
                 ready = false,
                 socReport = socReport,
-                hexagonArch = initRes.hexagonArch,
+                hexagonArch = resolvedArch,
+                htpDeviceCount = initRes.htpDeviceCount,
+                hmxEnabled = initRes.hmxEnabled,
                 activeDevices = initRes.activeDevices,
                 hwSummary = initRes.hwSummary,
                 errorMessage = initRes.errorMessage
@@ -70,7 +90,9 @@ class NpuChatEngine(context: Context) {
         NpuHardwareStatus(
             ready = true,
             socReport = socReport,
-            hexagonArch = if (initRes.hexagonArch > 0) initRes.hexagonArch else socReport.expectedHexagonArch,
+            hexagonArch = resolvedArch,
+            htpDeviceCount = initRes.htpDeviceCount.coerceAtLeast(1),
+            hmxEnabled = initRes.hmxEnabled,
             activeDevices = initRes.activeDevices,
             hwSummary = initRes.hwSummary
         )
@@ -79,30 +101,87 @@ class NpuChatEngine(context: Context) {
     suspend fun loadModelFromUri(
         uri: Uri,
         config: ModelConfig,
+        hasLoadedModel: Boolean,
         onProgress: (Float) -> Unit
     ): Result<LoadedModelInfo> = withContext(Dispatchers.IO) {
         if (!NpuLlamaBridge.ensureLibrariesLoaded()) {
             return@withContext Result.failure(
-                IllegalStateException(NpuLlamaBridge.libraryLoadError ?: "Библиотеки NPU не загружены.")
+                ModelLoadRejectedException(
+                    NpuLlamaBridge.libraryLoadError ?: "Библиотеки NPU не загружены.",
+                    keptPreviousModel = hasLoadedModel
+                )
             )
         }
 
         val (displayName, queriedSize) = resolveFileMetadata(uri)
         if (!displayName.lowercase().endsWith(".gguf")) {
             return@withContext Result.failure(
-                IllegalArgumentException(
-                    "Выбран файл «$displayName». Пожалуйста, выберите файл модели в формате .gguf."
+                ModelLoadRejectedException(
+                    "Выбран файл «$displayName». Пожалуйста, выберите файл модели в формате .gguf.",
+                    keptPreviousModel = hasLoadedModel
                 )
             )
         }
 
-        val pfd = appContext.contentResolver.openFileDescriptor(uri, "r")
+        // Снимок текущей памяти для двухэтапного контроля вместимости NPU и ОЗУ
+        val (ramSnap, _) = readRamTelemetry()
+        val reclaimableMib = ramSnap.npuHtpBufferMib + ramSnap.hostWeightMib
+
+        // ЭТАП 1 (до открытия дескриптора/выделения буферов): быстрая проверка по размеру SAF-файла
+        if (queriedSize > 0L) {
+            val precheck = NpuMemoryBudgetEvaluator.checkBeforeNativeLoad(
+                fileName = displayName,
+                fileSizeBytes = queriedSize,
+                hexagonArch = lastHexagonArch,
+                activeHtpDeviceCount = lastHtpDeviceCount,
+                systemAvailMib = ramSnap.systemAvailMib,
+                systemTotalMib = ramSnap.systemTotalMib,
+                reclaimableLoadedModelMib = reclaimableMib
+            )
+            if (!precheck.allowed) {
+                return@withContext Result.failure(
+                    ModelLoadRejectedException(
+                        precheck.errorMessage,
+                        keptPreviousModel = hasLoadedModel
+                    )
+                )
+            }
+        }
+
+        val pfd = runCatching {
+            appContext.contentResolver.openFileDescriptor(uri, "r")
+        }.getOrNull()
             ?: return@withContext Result.failure(
-                IllegalStateException("Не удалось открыть доступ к файлу «$displayName».")
+                ModelLoadRejectedException(
+                    "Не удалось открыть доступ к файлу «$displayName».",
+                    keptPreviousModel = hasLoadedModel
+                )
             )
 
         val statBytes = pfd.statSize.takeIf { it > 0L } ?: queriedSize
-        // Передаём владение дескриптором в C++ (fdopen + fclose гарантируют освобождение ресурса)
+        if (statBytes > 0L && statBytes != queriedSize) {
+            val fdPrecheck = NpuMemoryBudgetEvaluator.checkBeforeNativeLoad(
+                fileName = displayName,
+                fileSizeBytes = statBytes,
+                hexagonArch = lastHexagonArch,
+                activeHtpDeviceCount = lastHtpDeviceCount,
+                systemAvailMib = ramSnap.systemAvailMib,
+                systemTotalMib = ramSnap.systemTotalMib,
+                reclaimableLoadedModelMib = reclaimableMib
+            )
+            if (!fdPrecheck.allowed) {
+                runCatching { pfd.close() }
+                return@withContext Result.failure(
+                    ModelLoadRejectedException(
+                        fdPrecheck.errorMessage,
+                        keptPreviousModel = hasLoadedModel
+                    )
+                )
+            }
+        }
+
+        // Передаём владение дескриптором в C++ (fdopen + fclose гарантируют освобождение ресурса;
+        // внутри C++ сначала выполняется Этап 2 — zero-alloc разбор заголовков GGUF и расчёт тайлинга HTP)
         val detachedFd = pfd.detachFd()
 
         val cfg = config.sanitized()
@@ -123,6 +202,7 @@ class NpuChatEngine(context: Context) {
             seed = cfg.seed,
             flashAttnMode = cfg.flashAttnMode,
             kvQ8 = cfg.kvCacheQ8,
+            enableThinking = cfg.enableThinking,
             powerMode = cfg.powerMode,
             htpDevices = cfg.htpDevices,
             systemPrompt = cfg.systemPrompt,
@@ -130,7 +210,12 @@ class NpuChatEngine(context: Context) {
         )
 
         if (!nativeRes.ok) {
-            return@withContext Result.failure(IllegalStateException(nativeRes.errorMessage))
+            return@withContext Result.failure(
+                ModelLoadRejectedException(
+                    nativeRes.errorMessage,
+                    keptPreviousModel = nativeRes.keptPreviousModel
+                )
+            )
         }
 
         Result.success(
@@ -146,7 +231,8 @@ class NpuChatEngine(context: Context) {
                 nLayersTotal = nativeRes.nLayersTotal,
                 htpBufferMib = nativeRes.htpBufferMib,
                 hostBufferMib = nativeRes.hostBufferMib,
-                npuDeviceUsed = nativeRes.npuDeviceUsed
+                npuDeviceUsed = nativeRes.npuDeviceUsed,
+                quantWarning = nativeRes.quantWarning
             )
         )
     }
@@ -171,6 +257,7 @@ class NpuChatEngine(context: Context) {
             seed = cfg.seed,
             flashAttnMode = cfg.flashAttnMode,
             kvQ8 = cfg.kvCacheQ8,
+            enableThinking = cfg.enableThinking,
             powerMode = cfg.powerMode,
             htpDevices = cfg.htpDevices,
             systemPrompt = cfg.systemPrompt
@@ -219,6 +306,7 @@ class NpuChatEngine(context: Context) {
             seed = cfg.seed,
             flashAttnMode = cfg.flashAttnMode,
             kvQ8 = cfg.kvCacheQ8,
+            enableThinking = cfg.enableThinking,
             powerMode = cfg.powerMode,
             htpDevices = cfg.htpDevices,
             systemPrompt = cfg.systemPrompt,

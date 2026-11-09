@@ -85,6 +85,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
 
         binding.switchFlashAttn.isChecked = cfg.flashAttnMode > 0
         binding.switchKvQ8.isChecked = cfg.kvCacheQ8
+        binding.switchThinkingMode.isChecked = cfg.enableThinking
         binding.etSystemPrompt.setText(cfg.systemPrompt)
     }
 
@@ -176,6 +177,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
                 seed = parsedSeed,
                 flashAttnMode = if (binding.switchFlashAttn.isChecked) 1 else 0,
                 kvCacheQ8 = binding.switchKvQ8.isChecked,
+                enableThinking = binding.switchThinkingMode.isChecked,
                 powerMode = readSelectedPowerMode(),
                 systemPrompt = sysPrompt
             ).sanitized()

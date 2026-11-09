@@ -13,6 +13,7 @@ struct llama_context;
 struct llama_sampler;
 struct llama_vocab;
 struct ggml_backend_device;
+struct gguf_context;
 
 namespace npu {
 
@@ -21,16 +22,17 @@ struct EngineConfig {
     int32_t max_new_tokens    = 512;
     int32_t n_batch           = 512;
     int32_t n_threads         = 6;
-    int32_t n_npu_layers      = 999; // Always >= 1 (999 = offload all layers to Hexagon NPU)
+    int32_t n_npu_layers      = 999;   // Always >= 1 (999 = offload all layers to Hexagon NPU)
     float   temperature       = 0.7f;
     float   top_p             = 0.9f;
     int32_t top_k             = 40;
     float   min_p             = 0.05f;
     float   repeat_penalty    = 1.10f;
     int32_t repeat_last_n     = 64;
-    int32_t seed              = -1;  // < 0 -> random LLAMA_DEFAULT_SEED
-    int32_t flash_attn_mode   = 1;   // -1 = auto, 0 = disabled, 1 = enabled (default ON for HTP)
+    int32_t seed              = -1;    // < 0 -> random LLAMA_DEFAULT_SEED
+    int32_t flash_attn_mode   = 1;     // -1 = auto, 0 = disabled, 1 = enabled (HVX FA on HTP0)
     bool    kv_q8             = false; // false = F16, true = Q8_0 KV cache
+    bool    enable_thinking   = false; // false = direct reply (<think>\n\n</think>\n\n on Qwen3), true = CoT <think>
     std::string power_mode    = "sustained_high_performance";
     std::string htp_devices   = "HTP0";
     std::string system_prompt = "";
@@ -40,27 +42,55 @@ struct EngineConfig {
 
 struct InitResult {
     bool        ok              = false;
-    int32_t     hexagon_arch    = 0;   // e.g. 73 on Snapdragon 8s Gen 3 (SM8635)
+    int32_t     hexagon_arch    = 0;     // e.g. 73 on Snapdragon 8s Gen 3 (SM8635)
     int32_t     htp_device_cnt  = 0;
     bool        has_v73_skel    = false;
-    std::string active_devices;        // e.g. "HTP0 (Hexagon)"
-    std::string hw_summary;            // e.g. "Hexagon HTP v73 • HVX: 4 • HMX: 1 • VTCM: 8 MB"
+    bool        hmx_enabled     = false; // false = safe HVX-only NPU mode, true = FP16 HMX + HVX
+    std::string active_devices;          // e.g. "HTP0"
+    std::string hw_summary;              // e.g. "Hexagon HTP v73 (HTP0) • HVX: 4 • Режим точности HVX"
+    std::string error_message;
+};
+
+/**
+ * Zero-allocation GGUF metadata & Hexagon HTP memory budget inspection report.
+ * Computed from GGUF headers BEFORE any rpcmem/DMA-BUF or weight allocation occurs,
+ * preventing Android lmkd SIGKILL and 32-bit cDSP fastrpc_mmap crashes on oversized (e.g. 9B) models.
+ */
+struct GgufPreflightReport {
+    bool        ok                     = false;
+    std::string arch_name;
+    std::string dominant_quant;
+    int32_t     n_layers               = 0;
+    uint64_t    raw_weight_bytes       = 0;
+    double      htp_tiled_weights_mib  = 0.0;
+    double      host_embd_mib          = 0.0;
+    double      kv_cache_mib           = 0.0;
+    double      compute_reserve_mib    = 0.0;
+    double      total_required_npu_mib = 0.0;
+    double      npu_vmem_ceiling_mib   = 0.0;
+    double      npu_weight_ceiling_mib = 0.0;
+    double      effective_avail_ram_mib = 0.0;
+    bool        has_k_quants           = false;
+    bool        has_unsupported_quants = false;
+    std::string quant_warning;
     std::string error_message;
 };
 
 struct ModelLoadResult {
-    bool        ok                = false;
+    bool        ok                  = false;
+    bool        kept_previous_model = false;
     std::string model_desc;
     std::string quant_name;
-    uint64_t    model_bytes       = 0;
-    uint64_t    model_params      = 0;
-    int32_t     n_ctx_train       = 0;
-    int32_t     n_ctx_active      = 0;
-    int32_t     n_layers_total    = 0;
-    int32_t     n_layers_npu      = 0;
-    double      htp_buffer_mib    = 0.0;
-    double      host_buffer_mib   = 0.0;
+    uint64_t    model_bytes         = 0;
+    uint64_t    model_params        = 0;
+    int32_t     n_ctx_train         = 0;
+    int32_t     n_ctx_active        = 0;
+    int32_t     n_layers_total      = 0;
+    int32_t     n_layers_npu        = 0;
+    double      htp_buffer_mib      = 0.0;
+    double      host_buffer_mib     = 0.0;
     std::string npu_device_used;
+    std::string quant_warning;
     std::string error_message;
 };
 
@@ -120,10 +150,27 @@ public:
     // Validates the 8-byte GGUF header ("GGUF" magic + format version 2 or 3)
     static bool validateGgufHeaderBytes(const uint8_t * data, size_t len, std::string * err_out = nullptr);
 
+    // Inspects GGUF metadata & tensor descriptors with zero weight allocation and checks Hexagon HTP + RAM limits
+    static GgufPreflightReport evaluateGgufForHexagonNpu(
+        const gguf_context * gctx,
+        uint64_t file_size_bytes,
+        const EngineConfig & cfg,
+        int32_t hexagon_arch,
+        int32_t active_htp_devices,
+        double effective_avail_ram_mib,
+        double system_total_ram_mib);
+
+    // Formats multi-turn chat messages including Qwen3/Qwen3.5 <think> template handling
+    static std::string formatChatPromptWithTemplate(
+        const char * raw_template,
+        const std::vector<ChatTurnMessage> & messages,
+        bool enable_thinking);
+
     InitResult init(
         const std::string & native_lib_dir,
         const std::string & htp_devices,
-        const std::string & power_mode);
+        const std::string & power_mode,
+        bool allow_fp16_hmx = false);
 
     ModelLoadResult loadModelFromFd(
         int detached_fd,
@@ -160,7 +207,8 @@ public:
 private:
     ModelLoadResult finishModelLoadLocked(
         llama_model * loaded_model,
-        const EngineConfig & sanitized_cfg);
+        const EngineConfig & sanitized_cfg,
+        const std::string & preflight_quant_warning);
 
     bool recreateContextLocked(const EngineConfig & cfg, std::string * err_out);
     void rebuildSamplerLocked(const EngineConfig & cfg);
@@ -169,8 +217,9 @@ private:
     mutable std::mutex        lifecycle_mutex_;
     mutable std::shared_mutex vocab_mutex_;
 
-    std::string native_lib_dir_;
+    std::string  native_lib_dir_;
     EngineConfig active_config_;
+    bool         hmx_enabled_ = false;
 
     std::vector<ggml_backend_device *> htp_devices_;
     std::vector<ggml_backend_device *> htp_devices_null_term_;

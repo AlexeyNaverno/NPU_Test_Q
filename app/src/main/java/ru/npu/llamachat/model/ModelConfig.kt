@@ -18,10 +18,16 @@ data class ModelConfig(
     val repeatPenalty: Float = 1.10f,
     val repeatLastN: Int = 64,
     val seed: Int = -1,
-    /** 1 = включён (рекомендуется для Hexagon HTP), -1 = авто, 0 = выключен. */
+    /** 1 = включён (HVX Flash Attention на Hexagon HTP0), -1 = авто, 0 = выключен. */
     val flashAttnMode: Int = 1,
     /** true = Q8_0 KV-кэш (экономия ОЗУ), false = F16 KV-кэш. */
     val kvCacheQ8: Boolean = false,
+    /**
+     * Управление цепочкой рассуждений <think> для моделей Qwen3 / DeepSeek:
+     * false (по умолчанию) — прямой и быстрый ответ без длинного монолога <think>,
+     * true — включить развёрнутые рассуждения <think>...</think>.
+     */
+    val enableThinking: Boolean = false,
     /** Профиль питания Qualcomm FastRPC cDSP (sustained_high_performance, burst, balanced, power_saver). */
     val powerMode: String = POWER_SUSTAINED_HIGH,
     /** Целевое устройство Hexagon NPU (для Snapdragon 8s Gen 3 v73 строго HTP0). */
