@@ -19,7 +19,7 @@ jobs:
         run: |
           python -m pip install onnx==1.19.1
           python - <<'PY'
-          import hashlib, urllib.request, onnx
+          import hashlib, urllib.request, json, onnx
           root = 'https://huggingface.co/latentdivergence/dreamshaper8-lcm-npu-8gen2/resolve/6a2e524fe1e74f8050ea169f6cec1f725f956d90/'
           files = {
               'text_encoder.onnx': 'fc06df873065d0129fcb1e42b85200486bc9414b6914f2f82ea69a8c8ed6c8b8',
@@ -35,8 +35,11 @@ jobs:
                   raise ValueError(f'{name}: SHA256 mismatch')
               m = onnx.load_model_from_string(data)
               print('\n---', name, '---')
-              print('inputs:', [describe(v) for v in m.graph.input])
-              print('outputs:', [describe(v) for v in m.graph.output])
+              inputs = [describe(v) for v in m.graph.input]
+              outputs = [describe(v) for v in m.graph.output]
+              print('inputs:', inputs)
+              print('outputs:', outputs)
+              print('::notice title=' + name + '::' + json.dumps({'inputs': inputs, 'outputs': outputs}, ensure_ascii=True))
               print('nodes:', [(n.name, n.op_type, list(n.input), list(n.output)) for n in m.graph.node])
               for x in m.graph.initializer:
                   print('initializer:', x.name, onnx.numpy_helper.to_array(x).tolist())
