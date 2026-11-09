@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/action_pick_model"
+        android:icon="@drawable/ic_folder_open"
+        android:title="@string/action_select_gguf"
+        app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/action_clear_chat"
+        android:icon="@drawable/ic_delete_sweep"
+        android:title="@string/action_clear_chat"
+        app:showAsAction="always" />
+
+    <item
+        android:id="@+id/action_model_settings"
+        android:icon="@drawable/ic_tune"
+        android:title="@string/action_model_settings"
+        app:showAsAction="always" />
+
+</menu>

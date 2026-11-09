@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="npu_primary">#006874</color>
+    <color name="npu_on_primary">#FFFFFF</color>
+    <color name="npu_primary_container">#97F0FF</color>
+    <color name="npu_on_primary_container">#001F24</color>
+
+    <color name="npu_secondary">#4A6267</color>
+    <color name="npu_secondary_container">#CDE7EC</color>
+    <color name="npu_on_secondary_container">#051F23</color>
+
+    <color name="npu_surface">#F8FAFA</color>
+    <color name="npu_surface_container">#ECEEEF</color>
+    <color name="npu_on_surface">#191C1D</color>
+    <color name="npu_on_surface_variant">#3F484A</color>
+
+    <color name="npu_error_container">#FFDAD6</color>
+    <color name="npu_on_error_container">#410002</color>
+
+    <color name="ic_launcher_bg">#082027</color>
+    <color name="ic_launcher_fg">#4CE0F4</color>
+</resources>

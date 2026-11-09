@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:extractNativeLibs="true"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NpuLlamaChat">
+
+        <!-- Разрешаем линкеру Bionic доступ к системным драйверам Qualcomm FastRPC cDSP (Hexagon NPU) -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libadsprpc.so"
+            android:required="false" />
+        <!-- Только для разрешения DT_NEEDED в пребилде libggml.so; вычисления на GPU заблокированы в C++ -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL_adreno.so"
+            android:required="false" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

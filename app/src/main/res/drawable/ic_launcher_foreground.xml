@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Hexagon NPU Core Emblem -->
+    <path
+        android:fillColor="@color/ic_launcher_fg"
+        android:pathData="M54,24L79,38.5V69.5L54,84L29,69.5V38.5L54,24ZM54,31.5L35.5,42.2V65.8L54,76.5L72.5,65.8V42.2L54,31.5Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M43,63V45H47.5L56.5,57.2V45H61V63H56.5L47.5,50.8V63H43Z" />
+</vector>

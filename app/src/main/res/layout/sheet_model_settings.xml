@@ -1,0 +1,456 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_title"
+            android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/settings_subtitle"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorPrimary" />
+
+        <!-- 1. Максимальный размер контекста -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_max_context"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/chipGroupContext"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            app:singleSelection="true">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipCtx1024"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="1024" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipCtx2048"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="2048" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipCtx4096"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="4096" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipCtx8192"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="8192" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipCtx16384"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="16384" />
+        </com.google.android.material.chip.ChipGroup>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Точное n_ctx (512–32768)">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etMaxContext"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:hint="@string/settings_max_new_tokens">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etMaxNewTokens"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
+
+        <!-- 2. Размер батча предзаполнения -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/settings_batch_size"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/chipGroupBatch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipBatch128"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="128" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipBatch256"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="256" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipBatch512"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="512" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipBatch1024"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="1024" />
+        </com.google.android.material.chip.ChipGroup>
+
+        <!-- 3. Сэмплинг (температура, top_p, top_k, min_p, repeat_penalty, seed) -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_sampling_header"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <!-- Температура -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Температура (0 = точный)"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:id="@+id/tvTemperatureVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0.70"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderTemperature"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:stepSize="0.05"
+            android:value="0.70"
+            android:valueFrom="0.0"
+            android:valueTo="2.0" />
+
+        <!-- Top-P -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Top-P (ядерная выборка)"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:id="@+id/tvTopPVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0.90"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderTopP"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:stepSize="0.05"
+            android:value="0.90"
+            android:valueFrom="0.10"
+            android:valueTo="1.00" />
+
+        <!-- Min-P -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Min-P"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:id="@+id/tvMinPVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0.05"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderMinP"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:stepSize="0.01"
+            android:value="0.05"
+            android:valueFrom="0.00"
+            android:valueTo="0.50" />
+
+        <!-- Штраф за повторы -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Штраф за повторы (Repeat Penalty)"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:id="@+id/tvRepeatPenaltyVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="1.10"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderRepeatPenalty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:stepSize="0.05"
+            android:value="1.10"
+            android:valueFrom="1.00"
+            android:valueTo="2.00" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Top-K (1–500)">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etTopK"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:hint="Seed (-1 = случайный)">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etSeed"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberSigned" />
+            </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
+
+        <!-- 4. Аппаратный профиль Qualcomm Hexagon NPU -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="@string/settings_npu_header"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Профиль частоты cDSP (Qualcomm FastRPC):"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <RadioGroup
+            android:id="@+id/rgPowerMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="vertical">
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/rbPowerSustained"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Sustained High Performance (рекомендуется для 8s Gen 3)" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/rbPowerBurst"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Burst (максимальный турбо-буст HTP)" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/rbPowerBalanced"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Balanced (баланс скорости и нагрева)" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/rbPowerSaver"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Power Saver (экономия заряда на NPU)" />
+        </RadioGroup>
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchFlashAttn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:checked="true"
+            android:text="Flash Attention на Hexagon HTP" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchKvQ8"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Квантование KV-кэша Q8_0 (экономия ОЗУ на длинном контексте)" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Вспомогательные потоки токенизации"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:id="@+id/tvThreadsVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="6"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderThreads"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:stepSize="1"
+            android:value="6"
+            android:valueFrom="1"
+            android:valueTo="8" />
+
+        <!-- 5. Системный промпт -->
+        <com.google.android.material.textfield.TextInputLayout
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/settings_system_prompt">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etSystemPrompt"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:imeOptions="flagNoPersonalizedLearning"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLines="4"
+                android:minLines="2" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="end"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnResetDefaults"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_reset" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSaveConfig"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:text="@string/settings_apply" />
+        </LinearLayout>
+
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

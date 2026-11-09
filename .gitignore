@@ -1,0 +1,25 @@
+# Gradle & Android Studio
+.gradle/
+**/build/
+**/.cxx/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+output-metadata.json
+
+# Downloaded / staged Snapdragon Hexagon NPU SDK & GGUF models
+.npu-sdk-cache/
+third_party/llama-snapdragon-sdk/
+third_party/llama.cpp/
+*.gguf
+
+# Keystores (debug/CI ephemeral keystores excluded)
+*.jks
+*.keystore
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*~

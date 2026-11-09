@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingVertical="4dp">
+
+    <com.google.android.material.card.MaterialCardView
+        style="?attr/materialCardViewOutlinedStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start"
+        android:layout_marginEnd="36dp"
+        app:cardCornerRadius="16dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="10dp">
+
+            <TextView
+                android:id="@+id/tvMessageContent"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textIsSelectable="true" />
+
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/progressStreaming"
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:indeterminate="true"
+                android:visibility="gone"
+                app:trackThickness="3dp" />
+
+            <TextView
+                android:id="@+id/tvMessageMeta"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:alpha="0.75"
+                android:textAppearance="?attr/textAppearanceLabelSmall" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+</FrameLayout>
