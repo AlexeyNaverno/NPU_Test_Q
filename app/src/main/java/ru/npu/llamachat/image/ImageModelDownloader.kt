@@ -2,7 +2,6 @@ package ru.npu.llamachat.image
 
 import android.content.Context
 import java.io.File
-import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 import javax.net.ssl.HttpsURLConnection
@@ -28,49 +27,52 @@ internal object ImageModelDownloader {
         }
     }
 
-    fun download(context: Context, model: ImageModel, checkCancelled: () -> Unit, progress: (Long, Long) -> Unit): File {
+    fun download(context: Context, model: ImageModel, checkCancelled: () -> Unit,
+                 onFile: (String, Int, Int) -> Unit = { _, _, _ -> },
+                 onRetry: (String, Int) -> Unit = { _, _ -> },
+                 onVerify: (String) -> Unit = {},
+                 progress: (Long, Long) -> Unit): File {
         require(model in ImageModelCatalog.models)
         recoverBackup(context, model)
-        require(context.filesDir.usableSpace >= model.totalBytes + 64L * 1024 * 1024) {
-            "Недостаточно свободного места: необходимо ещё около ${(model.totalBytes / 1024 / 1024) + 64} МиБ"
+        val stage = File(context.filesDir, ".${model.folder}-download-resume")
+        check(stage.isDirectory || stage.mkdir()) { "Не удалось создать временную папку" }
+        val remaining = model.files.sumOf { entry ->
+            val file = File(stage, entry.path)
+            if (file.isFile && file.length() <= entry.bytes) entry.bytes - file.length() else entry.bytes
         }
-        // Удаляются только незавершённые загрузки этой модели, не установленная модель или бэкапы.
-        context.filesDir.listFiles()?.filter { it.name.startsWith(".${model.folder}-download-") }?.forEach { it.deleteRecursively() }
-        val stage = File(context.filesDir, ".${model.folder}-download-${UUID.randomUUID()}")
-        check(stage.mkdir()) { "Не удалось создать временную папку" }
-        var copied = 0L
-        try {
-            for (entry in model.files) {
-                checkCancelled()
-                val dest = File(stage, entry.path)
-                check(dest.canonicalPath.startsWith(stage.canonicalPath + File.separator)) { "Неверный путь файла модели" }
-                check(dest.parentFile?.let { it.isDirectory || it.mkdirs() } == true) { "Не удалось создать папку" }
-                val connection = connect("https://huggingface.co/${model.repository}/resolve/${model.revision}/${entry.path}")
-                try {
-                    connection.inputStream.use { input ->
-                        dest.outputStream().buffered().use { out ->
-                            VerifiedModelFile.copy(input, out, entry, checkCancelled) { n ->
-                                copied += n
-                                progress(copied, model.totalBytes)
-                            }
-                        }
-                    }
-                } finally { connection.disconnect() }
-            }
+        require(context.filesDir.usableSpace >= remaining + 64L * 1024 * 1024) {
+            "Недостаточно свободного места: необходимо ещё около ${(remaining / 1024 / 1024) + 64} МиБ"
+        }
+        var completed = 0L
+        for ((index, entry) in model.files.withIndex()) {
             checkCancelled()
-            val target = directory(context, model)
-            val backup = File(context.filesDir, ".${model.folder}-old-${UUID.randomUUID()}")
-            if (target.exists()) check(target.renameTo(backup)) { "Не удалось временно сохранить старую модель" }
-            if (!stage.renameTo(target)) {
-                if (backup.exists()) check(backup.renameTo(target)) { "Не удалось восстановить старую модель: ${backup.name}" }
-                error("Не удалось установить модель")
-            }
-            backup.deleteRecursively()
-            return target
-        } finally { stage.deleteRecursively() }
+            onFile(entry.path, index + 1, model.files.size)
+            val dest = File(stage, entry.path)
+            check(dest.canonicalPath.startsWith(stage.canonicalPath + File.separator)) { "Неверный путь файла модели" }
+            check(dest.parentFile?.let { it.isDirectory || it.mkdirs() } == true) { "Не удалось создать папку" }
+            val base = completed
+            progress(base + minOf(dest.length(), entry.bytes), model.totalBytes)
+            val url = "https://huggingface.co/${model.repository}/resolve/${model.revision}/${entry.path}"
+            ResumableFileDownload.download(entry, dest,
+                ResumableFileDownload.Transport { start, end -> connect(url, start, end) }, checkCancelled,
+                { current -> progress(base + current, model.totalBytes) },
+                onRetry = { attempt, _ -> onRetry(entry.path, attempt) },
+                onVerify = { onVerify(entry.path) })
+            completed += entry.bytes
+        }
+        checkCancelled()
+        val target = directory(context, model)
+        val backup = File(context.filesDir, ".${model.folder}-old-${UUID.randomUUID()}")
+        if (target.exists()) check(target.renameTo(backup)) { "Не удалось временно сохранить старую модель" }
+        if (!stage.renameTo(target)) {
+            if (backup.exists()) check(backup.renameTo(target)) { "Не удалось восстановить старую модель: ${backup.name}" }
+            error("Не удалось установить модель")
+        }
+        backup.deleteRecursively()
+        return target
     }
 
-    private fun connect(initialUrl: String): HttpsURLConnection {
+    private fun connect(initialUrl: String, start: Long, end: Long): ResumableFileDownload.Response {
         var url = URL(initialUrl)
         repeat(6) {
             require(url.protocol == "https" && url.userInfo == null && url.port in listOf(-1, 443) &&
@@ -79,18 +81,24 @@ internal object ImageModelDownloader {
             }
             val c = url.openConnection() as HttpsURLConnection
             c.instanceFollowRedirects = false
-            c.connectTimeout = 30_000
-            c.readTimeout = 30_000
+            c.connectTimeout = 60_000
+            c.readTimeout = 90_000
             c.setRequestProperty("Accept-Encoding", "identity")
+            c.setRequestProperty("Range", "bytes=$start-$end")
             try {
-                val status = c.responseCode
-                if (status in 300..399) {
+                val httpStatus = c.responseCode
+                if (httpStatus in 300..399) {
                     val location = c.getHeaderField("Location") ?: error("Переадресация без адреса")
                     url = URL(url, location)
                     c.disconnect()
                 } else {
-                    if (status != HttpURLConnection.HTTP_OK) error("Ошибка загрузки HTTP $status")
-                    return c
+                    return object : ResumableFileDownload.Response {
+                        override val status = httpStatus
+                        override val range = c.getHeaderField("Content-Range")
+                        override val encoding = c.getHeaderField("Content-Encoding")
+                        override fun stream() = c.inputStream
+                        override fun close() = c.disconnect()
+                    }
                 }
             } catch (t: Throwable) {
                 c.disconnect()

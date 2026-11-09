@@ -56,19 +56,28 @@ class ImageViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     val context = currentCoroutineContext()
                     var previousPercent = -1
-                    ImageModelDownloader.download(app, model, { context.ensureActive() }) { bytes, total ->
+                    var currentFile = ""
+                    ImageModelDownloader.download(app, model, { context.ensureActive() },
+                        onFile = { name, index, count ->
+                            currentFile = "Файл $index/$count: $name"
+                            previousPercent = -1
+                            _state.update { it.copy(status = currentFile) }
+                        },
+                        onRetry = { name, attempt -> _state.update { it.copy(status = "Сбой сети, повтор $attempt/4: $name") } },
+                        onVerify = { name -> _state.update { it.copy(status = "Проверка файла: $name") } }
+                    ) { bytes, total ->
                         val percent = (bytes * 100 / total).toInt()
                         if (percent != previousPercent) {
                             previousPercent = percent
-                            _state.update { it.copy(status = "Скачивание: $percent%") }
+                            _state.update { it.copy(status = "$currentFile — $percent%") }
                         }
                     }
                 }
                 _state.update { it.copy(installed = true, status = "Модель скачана. Выгрузите модель чата перед генерацией.") }
             } catch (e: CancellationException) {
-                _state.update { it.copy(status = "Загрузка отменена") }
+                _state.update { it.copy(status = "Загрузка приостановлена; нажмите «Скачать» для продолжения") }
             } catch (e: Exception) {
-                _state.update { it.copy(status = "Ошибка загрузки: ${e.message ?: "неизвестная ошибка"}") }
+                _state.update { it.copy(status = "Ошибка загрузки: ${e.message ?: "неизвестная ошибка"}. Данные сохранены; нажмите «Скачать» для продолжения.") }
             } finally {
                 _state.update { it.copy(busy = false, installed = ImageModelDownloader.isInstalled(app, model)) }
             }

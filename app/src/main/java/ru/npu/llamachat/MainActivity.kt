@@ -122,7 +122,7 @@ class MainActivity : AppCompatActivity() {
             val model = ImageModelCatalog.models[imageViewModel.state.value.selectedModel]
             val mib = model.totalBytes / (1024 * 1024)
             MaterialAlertDialogBuilder(this).setTitle("Скачать ${model.title}?")
-                .setMessage("Будет скачано около $mib МиБ во внутреннюю память приложения. Нужны интернет и свободное место; при замене старой копии нужно место для обеих. Условия CreativeML OpenRAIL-M распространяются на модель." +
+                .setMessage("Будет скачано около $mib МиБ во внутреннюю память приложения. Нужны интернет и свободное место; при замене старой копии нужно место для обеих. При сбое нажмите «Скачать» снова, чтобы продолжить. Условия CreativeML OpenRAIL-M распространяются на модель." +
                     if (model == ImageModelCatalog.anything) " Внимание: NPU-совместимость Anything V5 не подтверждена." else "")
                 .setNegativeButton("Отмена", null).setPositiveButton("Скачать") { _, _ -> imageViewModel.downloadModel() }.show()
         }
