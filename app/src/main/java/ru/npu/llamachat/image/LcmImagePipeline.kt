@@ -28,7 +28,7 @@ internal class LcmImagePipeline(
         require(latentScale.isFinite() && latentScale > 0f)
     }
 
-    /** Возвращает значения изображения CHW в диапазоне [0, 1], без сохранения на диск. */
+    /** Возвращает значения в раскладке декодера и диапазоне [0, 1], без сохранения на диск. */
     fun generate(
         prompt: String,
         steps: Int = 4,
