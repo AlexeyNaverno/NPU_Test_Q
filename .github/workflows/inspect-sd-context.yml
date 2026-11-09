@@ -40,7 +40,9 @@ jobs:
               print('inputs:', inputs)
               print('outputs:', outputs)
               print('::notice title=' + name + '::' + json.dumps({'inputs': inputs, 'outputs': outputs}, ensure_ascii=True))
-              print('nodes:', [(n.name, n.op_type, list(n.input), list(n.output)) for n in m.graph.node])
+              nodes = [(n.domain, n.op_type) for n in m.graph.node]
+              print('nodes:', nodes)
+              print('::notice title=' + name + ' nodes::' + json.dumps(nodes))
               initializers = {x.name: onnx.numpy_helper.to_array(x).tolist() for x in m.graph.initializer}
               print('initializers:', initializers)
               print('::notice title=' + name + ' constants::' + json.dumps(initializers))
