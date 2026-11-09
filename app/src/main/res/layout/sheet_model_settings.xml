@@ -382,6 +382,13 @@
             android:layout_height="wrap_content"
             android:text="Квантование KV-кэша Q8_0 (экономия ОЗУ на длинном контексте)" />
 
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchThinkingMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="false"
+            android:text="Режим размышлений &lt;think&gt; (для моделей Qwen3 / DeepSeek)" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import ru.npu.llamachat.engine.ModelLoadRejectedException
 import ru.npu.llamachat.engine.NpuChatEngine
 import ru.npu.llamachat.engine.NpuHardwareStatus
 import ru.npu.llamachat.engine.SnapdragonNpuDetector
@@ -28,6 +29,12 @@ import ru.npu.llamachat.model.RamStats
 import ru.npu.llamachat.model.TokenStats
 import java.util.concurrent.atomic.AtomicLong
 
+data class UiAlertDialogEvent(
+    val title: String,
+    val message: String,
+    val offerSettingsAction: Boolean = false
+)
+
 data class ChatUiState(
     val npuInitializing: Boolean = true,
     val npuStatus: NpuHardwareStatus = NpuHardwareStatus(
@@ -36,6 +43,8 @@ data class ChatUiState(
     ),
     val config: ModelConfig = ModelConfig(),
     val isLoadingModel: Boolean = false,
+    val isUnloadingModel: Boolean = false,
+    val isApiGenerating: Boolean = false,
     val loadProgress: Float = 0f,
     val loadedModel: LoadedModelInfo? = null,
     val isGenerating: Boolean = false,
@@ -55,6 +64,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val events: SharedFlow<String> = _events.asSharedFlow()
+
+    private val _alertDialogs = MutableSharedFlow<UiAlertDialogEvent>(extraBufferCapacity = 4)
+    val alertDialogs: SharedFlow<UiAlertDialogEvent> = _alertDialogs.asSharedFlow()
 
     private var generationJob: Job? = null
     private var modelLoadJob: Job? = null
@@ -119,15 +131,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun loadModel(uri: Uri) {
         val state = _uiState.value
         if (!state.npuStatus.ready) {
-            _events.tryEmit(
-                state.npuStatus.errorMessage.ifBlank {
-                    "Загрузка заблокирована: Qualcomm Hexagon NPU недоступен."
-                }
+            _alertDialogs.tryEmit(
+                UiAlertDialogEvent(
+                    title = "NPU недоступен",
+                    message = state.npuStatus.errorMessage.ifBlank {
+                        "Загрузка заблокирована: Qualcomm Hexagon NPU недоступен."
+                    }
+                )
             )
             return
         }
-        if (state.isLoadingModel) return
+        if (state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating) return
 
+        val hadModelBefore = state.loadedModel != null
         generationJob?.cancel()
         engine.cancelGeneration()
 
@@ -143,6 +159,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val result = engine.loadModelFromUri(
                 uri = uri,
                 config = _uiState.value.config,
+                hasLoadedModel = hadModelBefore,
                 onProgress = { prog ->
                     _uiState.update { s -> s.copy(loadProgress = prog.coerceIn(0f, 1f)) }
                 }
@@ -164,23 +181,75 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     refreshRamOnce()
-                    _events.tryEmit(
-                        "Модель «${info.fileName}» загружена на ${info.npuDeviceUsed} " +
-                            "(${info.nLayersNpu}/${info.nLayersTotal} слоёв на NPU)"
-                    )
+                    val baseToast = "Модель «${info.fileName}» загружена на ${info.npuDeviceUsed} " +
+                        "(${info.nLayersNpu}/${info.nLayersTotal} слоёв на NPU)"
+                    _events.tryEmit(baseToast)
                 },
                 onFailure = { err ->
+                    val keptPrev = (err as? ModelLoadRejectedException)?.keptPreviousModel ?: false
                     _uiState.update { s ->
                         s.copy(
                             isLoadingModel = false,
                             loadProgress = 0f,
-                            loadedModel = null
+                            loadedModel = if (keptPrev) s.loadedModel else null
                         )
                     }
                     refreshRamOnce()
-                    _events.tryEmit(err.message ?: "Не удалось загрузить файл .gguf.")
+                    val errMsg = err.message ?: "Не удалось загрузить файл .gguf в память Hexagon NPU."
+                    val suggestSettings = errMsg.contains("n_ctx", ignoreCase = true) ||
+                        errMsg.contains("контекст", ignoreCase = true)
+                    _alertDialogs.tryEmit(
+                        UiAlertDialogEvent(
+                            title = "Модель не загружена в Hexagon NPU",
+                            message = errMsg,
+                            offerSettingsAction = suggestSettings
+                        )
+                    )
                 }
             )
+        }
+    }
+
+    /** Освобождает веса и KV-кэш, не завершая приложение. */
+    fun unloadModel() {
+        val state = _uiState.value
+        if (state.loadedModel == null || state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating) return
+        _uiState.update { it.copy(isUnloadingModel = true) }
+        engine.cancelGeneration()
+        generationJob?.cancel()
+        draftCountJob?.cancel()
+        viewModelScope.launch {
+            generationJob?.join()
+            engine.unloadModel()
+            _uiState.update {
+                it.copy(
+                    isUnloadingModel = false,
+                    isGenerating = false,
+                    loadedModel = null,
+                    messages = emptyList(),
+                    tokenStats = TokenStats(contextMaxTokens = it.config.nCtx)
+                )
+            }
+            refreshRamOnce()
+            _events.tryEmit("Модель выгружена из NPU")
+        }
+    }
+
+    /** Вызывается с главного потока; входная история живёт только до завершения запроса. */
+    suspend fun generateForApi(history: List<ChatMessage>, systemPrompt: String?): Pair<String, ru.npu.llamachat.engine.NativeGenerationStats> {
+        val state = _uiState.value
+        check(state.npuStatus.ready && state.loadedModel != null) { "Модель не загружена на NPU" }
+        check(!state.isGenerating && !state.isApiGenerating && !state.isLoadingModel && !state.isUnloadingModel) { "NPU занят" }
+        _uiState.update { it.copy(isApiGenerating = true) }
+        try {
+            val output = StringBuilder()
+            val config = if (systemPrompt == null) state.config else state.config.copy(systemPrompt = systemPrompt)
+            val stats = engine.generateReply(history, config) { piece -> output.append(piece); true }
+            check(stats.ok && !stats.stoppedByUser) { stats.errorMessage.ifBlank { "Генерация остановлена" } }
+            return output.toString() to stats
+        } finally {
+            _uiState.update { it.copy(isApiGenerating = false) }
+            refreshRamOnce()
         }
     }
 
@@ -201,10 +270,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _events.tryEmit("Сначала выберите файл модели .gguf.")
             return
         }
-        if (cur.isGenerating || cur.isLoadingModel) {
+        if (cur.isGenerating || cur.isLoadingModel || cur.isUnloadingModel || cur.isApiGenerating) {
             return
         }
 
+        _uiState.update { it.copy(isGenerating = true) }
         generationJob = viewModelScope.launch {
             val userTokens = engine.countTokens(text)
             val userMsg = ChatMessage(
@@ -272,7 +342,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     )
                 }
-                _events.tryEmit(stats.errorMessage.ifBlank { "Ошибка генерации на Hexagon NPU." })
+                val errText = stats.errorMessage.ifBlank { "Ошибка генерации на Hexagon NPU." }
+                _alertDialogs.tryEmit(
+                    UiAlertDialogEvent(
+                        title = "Ошибка генерации на Hexagon NPU",
+                        message = errText
+                    )
+                )
                 refreshRamOnce()
                 return@launch
             }
@@ -314,6 +390,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Полная очистка эфемерного чата и сброс KV-кэша на Hexagon NPU.
      */
     fun clearChat() {
+        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel) return
         engine.cancelGeneration()
         generationJob?.cancel()
         viewModelScope.launch {
@@ -335,6 +412,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateModelConfig(newConfig: ModelConfig) {
+        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel || _uiState.value.isLoadingModel) return
         val clean = newConfig.sanitized()
         val prev = _uiState.value.config
         val contextRecreated = _uiState.value.loadedModel != null && (
@@ -343,6 +421,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 clean.flashAttnMode != prev.flashAttnMode ||
                 clean.kvCacheQ8 != prev.kvCacheQ8
             )
+        val thinkReset = _uiState.value.loadedModel != null &&
+            clean.enableThinking != prev.enableThinking
 
         engine.cancelGeneration()
         generationJob?.cancel()
@@ -359,7 +439,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             loadedModel = updLoaded,
                             tokenStats = s.tokenStats.copy(
                                 contextMaxTokens = clean.nCtx,
-                                contextUsedTokens = if (contextRecreated) 0 else s.tokenStats.contextUsedTokens
+                                contextUsedTokens = if (contextRecreated || thinkReset) 0 else s.tokenStats.contextUsedTokens
                             )
                         )
                     }
@@ -373,7 +453,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 },
                 onFailure = { err ->
-                    _events.tryEmit(err.message ?: "Ошибка применения конфигурации модели.")
+                    _alertDialogs.tryEmit(
+                        UiAlertDialogEvent(
+                            title = "Не удалось применить параметры NPU",
+                            message = err.message ?: "Ошибка применения конфигурации модели.",
+                            offerSettingsAction = true
+                        )
+                    )
                 }
             )
         }

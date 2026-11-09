@@ -24,4 +24,5 @@
     <string name="settings_system_prompt">Системная инструкция (System Prompt)</string>
     <string name="settings_reset">Сбросить</string>
     <string name="settings_apply">Применить</string>
+    <string name="action_unload_model">Выгрузить модель из NPU</string>
 </resources>

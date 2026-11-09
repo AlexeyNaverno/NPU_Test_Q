@@ -2,15 +2,19 @@
 
 #include "ggml-backend.h"
 #include "ggml.h"
+#include "gguf.h"
 #include "llama.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <map>
 #include <sstream>
 #include <unistd.h>
 
@@ -83,6 +87,18 @@ struct ScopedBatch {
     ScopedBatch & operator=(const ScopedBatch &) = delete;
 };
 
+struct ScopedGguf {
+    gguf_context * ctx = nullptr;
+    explicit ScopedGguf(gguf_context * c) : ctx(c) {}
+    ~ScopedGguf() {
+        if (ctx) {
+            gguf_free(ctx);
+        }
+    }
+    ScopedGguf(const ScopedGguf &) = delete;
+    ScopedGguf & operator=(const ScopedGguf &) = delete;
+};
+
 bool is_valid_power_mode(const std::string & mode) {
     return mode == "low_power_saver" ||
            mode == "power_saver" ||
@@ -103,65 +119,244 @@ size_t utf8_expected_len(unsigned char lead) {
     return 0; // Invalid lead byte or stray continuation byte
 }
 
-std::string format_chat_messages(
-    const llama_model * model,
-    const std::vector<ChatTurnMessage> & messages) {
-    std::vector<llama_chat_message> c_msgs;
-    c_msgs.reserve(messages.size());
-    size_t approx_chars = 64;
-    for (const auto & m : messages) {
-        c_msgs.push_back(llama_chat_message{m.role.c_str(), m.content.c_str()});
-        approx_chars += m.role.size() + m.content.size() + 32;
-    }
-
-    const char * model_tmpl = model ? llama_model_chat_template(model, nullptr) : nullptr;
-    std::vector<char> buf(approx_chars * 2 + 256, '\0');
-
-    auto try_apply = [&](const char * tmpl) -> int32_t {
-        int32_t res = llama_chat_apply_template(
-            tmpl,
-            c_msgs.data(),
-            c_msgs.size(),
-            /*add_ass=*/true,
-            buf.data(),
-            static_cast<int32_t>(buf.size()));
-        if (res > static_cast<int32_t>(buf.size())) {
-            buf.assign(static_cast<size_t>(res) + 64, '\0');
-            res = llama_chat_apply_template(
-                tmpl,
-                c_msgs.data(),
-                c_msgs.size(),
-                /*add_ass=*/true,
-                buf.data(),
-                static_cast<int32_t>(buf.size()));
-        }
-        return res;
-    };
-
-    int32_t written = try_apply(model_tmpl);
-    if (written < 0) {
-        // Fallback to standard ChatML if GGUF embeds an unrecognized custom Jinja macro
-        written = try_apply("chatml");
-    }
-
-    if (written >= 0 && static_cast<size_t>(written) <= buf.size()) {
-        return std::string(buf.data(), static_cast<size_t>(written));
-    }
-
-    // Ultimate deterministic fallback
-    std::ostringstream oss;
-    for (const auto & m : messages) {
-        oss << "<|im_start|>" << m.role << "\n" << m.content << "<|im_end|>\n";
-    }
-    oss << "<|im_start|>assistant\n";
-    return oss.str();
+int64_t round_up_i64(int64_t v, int64_t align) {
+    if (align <= 1 || v <= 0) return v;
+    return ((v + align - 1) / align) * align;
 }
 
-std::vector<llama_token> tokenize_string(
+// Type-safe GGUF integer reader — NEVER triggers GGML_ABORT on mismatched KV integer/array types
+int64_t gguf_read_int64_safe(const gguf_context * ctx, const char * key, int64_t fallback) {
+    if (!ctx || !key) return fallback;
+    const int64_t id = gguf_find_key(ctx, key);
+    if (id < 0) return fallback;
+
+    const enum gguf_type t = gguf_get_kv_type(ctx, id);
+    switch (t) {
+        case GGUF_TYPE_UINT8:  return static_cast<int64_t>(gguf_get_val_u8(ctx, id));
+        case GGUF_TYPE_INT8:   return static_cast<int64_t>(gguf_get_val_i8(ctx, id));
+        case GGUF_TYPE_UINT16: return static_cast<int64_t>(gguf_get_val_u16(ctx, id));
+        case GGUF_TYPE_INT16:  return static_cast<int64_t>(gguf_get_val_i16(ctx, id));
+        case GGUF_TYPE_UINT32: return static_cast<int64_t>(gguf_get_val_u32(ctx, id));
+        case GGUF_TYPE_INT32:  return static_cast<int64_t>(gguf_get_val_i32(ctx, id));
+        case GGUF_TYPE_UINT64: return static_cast<int64_t>(gguf_get_val_u64(ctx, id));
+        case GGUF_TYPE_INT64:  return gguf_get_val_i64(ctx, id);
+        case GGUF_TYPE_ARRAY: {
+            // Hybrid/GQA models (e.g. Qwen3.5, Gemma3, Nemotron) may store per-layer head_count_kv arrays
+            const size_t n = gguf_get_arr_n(ctx, id);
+            const void * data = (n > 0) ? gguf_get_arr_data(ctx, id) : nullptr;
+            if (!data || n == 0) return fallback;
+            const enum gguf_type at = gguf_get_arr_type(ctx, id);
+            int64_t max_val = 0;
+            for (size_t i = 0; i < n; ++i) {
+                int64_t v = 0;
+                if (at == GGUF_TYPE_UINT32)      v = static_cast<const uint32_t *>(data)[i];
+                else if (at == GGUF_TYPE_INT32)  v = static_cast<const int32_t *>(data)[i];
+                else if (at == GGUF_TYPE_UINT64) v = static_cast<int64_t>(static_cast<const uint64_t *>(data)[i]);
+                else if (at == GGUF_TYPE_INT64)  v = static_cast<const int64_t *>(data)[i];
+                else return fallback;
+                if (v > max_val) max_val = v;
+            }
+            return (max_val > 0) ? max_val : fallback;
+        }
+        default:
+            return fallback;
+    }
+}
+
+std::string gguf_read_str_safe(const gguf_context * ctx, const char * key) {
+    if (!ctx || !key) return {};
+    const int64_t id = gguf_find_key(ctx, key);
+    if (id < 0 || gguf_get_kv_type(ctx, id) != GGUF_TYPE_STRING) {
+        return {};
+    }
+    const char * s = gguf_get_val_str(ctx, id);
+    return s ? std::string(s) : std::string{};
+}
+
+bool htp_supports_matmul_weight_type(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q4_0:
+        case GGML_TYPE_Q4_1:
+        case GGML_TYPE_Q8_0:
+        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_MXFP4:
+        case GGML_TYPE_Q1_0:
+        case GGML_TYPE_Q2_0:
+        case GGML_TYPE_Q2_K:
+        case GGML_TYPE_Q3_K:
+        case GGML_TYPE_Q4_K:
+        case GGML_TYPE_Q5_K:
+        case GGML_TYPE_Q6_K:
+        case GGML_TYPE_F16:
+        case GGML_TYPE_F32:
+        case GGML_TYPE_BF16:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool is_k_quant_type(enum ggml_type type) {
+    return type == GGML_TYPE_Q2_K ||
+           type == GGML_TYPE_Q3_K ||
+           type == GGML_TYPE_Q4_K ||
+           type == GGML_TYPE_Q5_K ||
+           type == GGML_TYPE_Q6_K;
+}
+
+// Exact HTP 2D-tiled row byte size matching ggml-hexagon/htp-repack.h & htp-tensor.h
+size_t compute_htp_tiled_row_bytes(enum ggml_type type, int64_t ne0_padded) {
+    switch (type) {
+        case GGML_TYPE_F16:
+        case GGML_TYPE_F32:
+        case GGML_TYPE_BF16:
+            return static_cast<size_t>(ne0_padded) * 2u; // Repacked to FP16 on HTP
+        case GGML_TYPE_Q4_0:
+        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_Q1_0:
+            return static_cast<size_t>(ne0_padded / 32) * (576u / 32u); // 18 B / 32
+        case GGML_TYPE_Q4_1:
+        case GGML_TYPE_Q4_K:
+            return static_cast<size_t>(ne0_padded / 32) * (640u / 32u); // 20 B / 32
+        case GGML_TYPE_Q8_0:
+            return static_cast<size_t>(ne0_padded / 32) * (1088u / 32u); // 34 B / 32
+        case GGML_TYPE_MXFP4:
+            return static_cast<size_t>(ne0_padded / 32) * (544u / 32u); // 17 B / 32
+        case GGML_TYPE_Q5_K:
+            return static_cast<size_t>(ne0_padded / 32) * (768u / 32u); // 24 B / 32
+        case GGML_TYPE_Q6_K:
+            return static_cast<size_t>(ne0_padded / 32) * (896u / 32u); // 28 B / 32
+        case GGML_TYPE_Q3_K:
+            return static_cast<size_t>(ne0_padded / 32) * (512u / 32u); // 16 B / 32
+        case GGML_TYPE_Q2_0:
+            return static_cast<size_t>(ne0_padded / 64) * 18u;
+        default:
+            return ggml_row_size(type, ne0_padded);
+    }
+}
+
+uint64_t compute_htp_tensor_alloc_bytes(
+    enum ggml_type type,
+    const int64_t * ne,
+    size_t raw_bytes,
+    bool is_host_input_tensor) {
+    if (is_host_input_tensor || !ne) {
+        return static_cast<uint64_t>(raw_bytes);
+    }
+    const bool will_tile =
+        htp_supports_matmul_weight_type(type) &&
+        ne[0] >= 32 && (ne[0] % 32 == 0) &&
+        ne[3] == 1 &&
+        (ggml_is_quantized(type) || ne[1] > 1);
+
+    if (!will_tile) {
+        return static_cast<uint64_t>(raw_bytes);
+    }
+
+    const int64_t ne0 = round_up_i64(ne[0], 32);
+    const int64_t ne1 = round_up_i64(ne[1], 32);
+    const int64_t ne2 = std::max<int64_t>(1, ne[2]);
+    const int64_t ne3 = std::max<int64_t>(1, ne[3]);
+
+    const uint64_t row_bytes  = static_cast<uint64_t>(compute_htp_tiled_row_bytes(type, ne0));
+    const uint64_t tiled_size = row_bytes * static_cast<uint64_t>(ne1) *
+                                static_cast<uint64_t>(ne2) * static_cast<uint64_t>(ne3);
+    return std::max<uint64_t>(tiled_size, static_cast<uint64_t>(raw_bytes));
+}
+
+// Strips completed <think>...</think> blocks from historical assistant turns (per Qwen3 Jinja spec)
+std::string strip_completed_think_blocks(const std::string & content) {
+    std::string out = content;
+    while (true) {
+        const size_t start = out.find("<think>");
+        if (start == std::string::npos) break;
+        const size_t end = out.find("</think>", start + 7);
+        if (end == std::string::npos) break;
+        size_t erase_end = end + 8;
+        while (erase_end < out.size() && (out[erase_end] == '\n' || out[erase_end] == '\r')) {
+            ++erase_end;
+        }
+        out.erase(start, erase_end - start);
+    }
+    return out;
+}
+
+bool ends_with_directive(const std::string & text, const std::string & directive, std::string * cleaned_out) {
+    size_t end = text.size();
+    while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\n' || text[end - 1] == '\r')) {
+        --end;
+    }
+    if (end >= directive.size() &&
+        text.compare(end - directive.size(), directive.size(), directive) == 0) {
+        const size_t pos = end - directive.size();
+        if (pos == 0 || text[pos - 1] == ' ' || text[pos - 1] == '\n' || text[pos - 1] == '\t') {
+            if (cleaned_out) {
+                size_t trim_end = pos;
+                while (trim_end > 0 && (text[trim_end - 1] == ' ' || text[trim_end - 1] == '\t')) {
+                    --trim_end;
+                }
+                *cleaned_out = text.substr(0, trim_end);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<llama_token> tokenize_prompt_smart(
     const llama_vocab * vocab,
-    const std::string & text,
-    bool add_special,
-    bool parse_special) {
+    const std::string & formatted) {
+    if (!vocab || formatted.empty()) {
+        return {};
+    }
+
+    // Avoid adding a duplicate BOS token if the chat template already emitted the literal BOS text
+    // (e.g. Llama 3 "<|begin_of_text|>" or Gemma "<bos>")
+    bool add_special = llama_vocab_get_add_bos(vocab);
+    if (add_special) {
+        const llama_token bos_id = llama_vocab_bos(vocab);
+        if (bos_id != LLAMA_TOKEN_NULL) {
+            const char * bos_txt = llama_vocab_get_text(vocab, bos_id);
+            if (bos_txt && bos_txt[0] != '\0') {
+                const size_t blen = std::strlen(bos_txt);
+                if (formatted.size() >= blen && formatted.compare(0, blen, bos_txt) == 0) {
+                    add_special = false;
+                }
+            }
+        }
+    }
+
+    int32_t n_est = static_cast<int32_t>(formatted.size()) + 16;
+    std::vector<llama_token> tokens(static_cast<size_t>(n_est));
+    int32_t n = llama_tokenize(
+        vocab,
+        formatted.data(),
+        static_cast<int32_t>(formatted.size()),
+        tokens.data(),
+        static_cast<int32_t>(tokens.size()),
+        add_special,
+        /*parse_special=*/true);
+    if (n < 0 && n != INT32_MIN) {
+        tokens.resize(static_cast<size_t>(-n));
+        n = llama_tokenize(
+            vocab,
+            formatted.data(),
+            static_cast<int32_t>(formatted.size()),
+            tokens.data(),
+            static_cast<int32_t>(tokens.size()),
+            add_special,
+            /*parse_special=*/true);
+    }
+    if (n < 0) {
+        return {};
+    }
+    tokens.resize(static_cast<size_t>(n));
+    return tokens;
+}
+
+std::vector<llama_token> tokenize_plain_text(
+    const llama_vocab * vocab,
+    const std::string & text) {
     if (!vocab || text.empty()) {
         return {};
     }
@@ -173,8 +368,8 @@ std::vector<llama_token> tokenize_string(
         static_cast<int32_t>(text.size()),
         tokens.data(),
         static_cast<int32_t>(tokens.size()),
-        add_special,
-        parse_special);
+        /*add_special=*/false,
+        /*parse_special=*/true);
     if (n < 0 && n != INT32_MIN) {
         tokens.resize(static_cast<size_t>(-n));
         n = llama_tokenize(
@@ -183,14 +378,47 @@ std::vector<llama_token> tokenize_string(
             static_cast<int32_t>(text.size()),
             tokens.data(),
             static_cast<int32_t>(tokens.size()),
-            add_special,
-            parse_special);
+            /*add_special=*/false,
+            /*parse_special=*/true);
     }
     if (n < 0) {
         return {};
     }
     tokens.resize(static_cast<size_t>(n));
     return tokens;
+}
+
+bool check_logits_finite(llama_context * ctx, const llama_vocab * vocab) {
+    if (!ctx || !vocab) return false;
+    const float * logits = llama_get_logits_ith(ctx, -1);
+    if (!logits) return false;
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+    if (n_vocab <= 0) return false;
+
+    const int32_t head_check = std::min<int32_t>(n_vocab, 64);
+    for (int32_t i = 0; i < head_check; ++i) {
+        if (!std::isfinite(logits[i])) {
+            return false;
+        }
+    }
+    const int32_t step = std::max<int32_t>(1, n_vocab / 256);
+    for (int32_t i = head_check; i < n_vocab; i += step) {
+        if (!std::isfinite(logits[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string format_mib_or_gib(double mib) {
+    std::ostringstream oss;
+    if (mib >= 1024.0) {
+        oss << std::fixed << std::setprecision(2) << (mib / 1024.0) << " ГБ ("
+            << std::setprecision(0) << mib << " МБ)";
+    } else {
+        oss << std::fixed << std::setprecision(0) << mib << " МБ";
+    }
+    return oss.str();
 }
 
 } // namespace
@@ -245,12 +473,10 @@ std::string Utf8StreamAssembler::push(const char * bytes, size_t len) {
         const auto lead = static_cast<unsigned char>(pending_[i]);
         const size_t seq_len = utf8_expected_len(lead);
         if (seq_len == 0) {
-            // Replace invalid stray byte with UTF-8 replacement char U+FFFD and advance
             pending_.replace(i, 1, "\xEF\xBF\xBD");
             return push("", 0);
         }
         if (i + seq_len > total) {
-            // Trailing multi-byte character is incomplete — wait for next token!
             break;
         }
         bool cont_ok = true;
@@ -287,6 +513,324 @@ std::string Utf8StreamAssembler::flush() {
 
 void Utf8StreamAssembler::clear() {
     pending_.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Chat Template Formatter (including Qwen3 / Qwen3.5 <think> support)
+// ---------------------------------------------------------------------------
+
+std::string NpuEngine::formatChatPromptWithTemplate(
+    const char * raw_template,
+    const std::vector<ChatTurnMessage> & messages,
+    bool enable_thinking) {
+    const std::string tmpl_str = raw_template ? raw_template : "";
+    const bool is_qwen3_chatml_think =
+        tmpl_str.find("<|im_start|>") != std::string::npos &&
+        tmpl_str.find("<think>") != std::string::npos;
+
+    // Sanitize messages: strip completed <think>...</think> from prior assistant turns
+    // and check for explicit /think or /no_think directives on the latest user turn.
+    std::vector<ChatTurnMessage> clean_msgs = messages;
+    bool think_for_turn = enable_thinking;
+
+    for (size_t i = 0; i < clean_msgs.size(); ++i) {
+        if (clean_msgs[i].role == "assistant") {
+            clean_msgs[i].content = strip_completed_think_blocks(clean_msgs[i].content);
+        }
+    }
+    if (!clean_msgs.empty() && clean_msgs.back().role == "user") {
+        std::string stripped;
+        if (ends_with_directive(clean_msgs.back().content, "/think", &stripped)) {
+            think_for_turn = true;
+            if (!stripped.empty()) clean_msgs.back().content = stripped;
+        } else if (ends_with_directive(clean_msgs.back().content, "/no_think", &stripped)) {
+            think_for_turn = false;
+            if (!stripped.empty()) clean_msgs.back().content = stripped;
+        }
+    }
+
+    if (is_qwen3_chatml_think) {
+        std::ostringstream oss;
+        for (const auto & m : clean_msgs) {
+            oss << "<|im_start|>" << m.role << "\n" << m.content << "<|im_end|>\n";
+        }
+        if (think_for_turn) {
+            oss << "<|im_start|>assistant\n<think>\n";
+        } else {
+            // Official Qwen3 non-thinking prefill sequence: prevents broken/unbounded CoT on 0.6B–4B models!
+            oss << "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+        }
+        return oss.str();
+    }
+
+    std::vector<llama_chat_message> c_msgs;
+    c_msgs.reserve(clean_msgs.size());
+    size_t approx_chars = 64;
+    for (const auto & m : clean_msgs) {
+        c_msgs.push_back(llama_chat_message{m.role.c_str(), m.content.c_str()});
+        approx_chars += m.role.size() + m.content.size() + 32;
+    }
+
+    std::vector<char> buf(approx_chars * 2 + 256, '\0');
+    auto try_apply = [&](const char * tmpl) -> int32_t {
+        int32_t res = llama_chat_apply_template(
+            tmpl,
+            c_msgs.data(),
+            c_msgs.size(),
+            /*add_ass=*/true,
+            buf.data(),
+            static_cast<int32_t>(buf.size()));
+        if (res > static_cast<int32_t>(buf.size())) {
+            buf.assign(static_cast<size_t>(res) + 64, '\0');
+            res = llama_chat_apply_template(
+                tmpl,
+                c_msgs.data(),
+                c_msgs.size(),
+                /*add_ass=*/true,
+                buf.data(),
+                static_cast<int32_t>(buf.size()));
+        }
+        return res;
+    };
+
+    int32_t written = try_apply(raw_template);
+    if (written < 0) {
+        written = try_apply("chatml");
+    }
+
+    if (written >= 0 && static_cast<size_t>(written) <= buf.size()) {
+        return std::string(buf.data(), static_cast<size_t>(written));
+    }
+
+    std::ostringstream oss;
+    for (const auto & m : clean_msgs) {
+        oss << "<|im_start|>" << m.role << "\n" << m.content << "<|im_end|>\n";
+    }
+    oss << "<|im_start|>assistant\n";
+    return oss.str();
+}
+
+// ---------------------------------------------------------------------------
+// Zero-Allocation GGUF & Hexagon HTP Capacity Gate
+// ---------------------------------------------------------------------------
+
+GgufPreflightReport NpuEngine::evaluateGgufForHexagonNpu(
+    const gguf_context * gctx,
+    uint64_t file_size_bytes,
+    const EngineConfig & cfg,
+    int32_t hexagon_arch,
+    int32_t active_htp_devices,
+    double effective_avail_ram_mib,
+    double system_total_ram_mib) {
+    GgufPreflightReport rep{};
+
+    if (!gctx) {
+        rep.error_message =
+            "Не удалось разобрать структуру метаданных GGUF. Файл повреждён, обрезан или не является корректной моделью .gguf.";
+        return rep;
+    }
+
+    const int64_t n_tensors = gguf_get_n_tensors(gctx);
+    if (n_tensors <= 0) {
+        rep.error_message =
+            "В выбранном файле .gguf отсутствуют тензоры весов (возможно, это файл только словаря или адаптер LoRA).";
+        return rep;
+    }
+
+    rep.arch_name = gguf_read_str_safe(gctx, "general.architecture");
+    const std::string model_name = gguf_read_str_safe(gctx, "general.name");
+    const std::string size_label = gguf_read_str_safe(gctx, "general.size_label");
+
+    int64_t n_layer   = 0;
+    int64_t n_embd    = 0;
+    int64_t n_head    = 0;
+    int64_t n_head_kv = 0;
+    int64_t d_k       = 0;
+    int64_t d_v       = 0;
+
+    if (!rep.arch_name.empty()) {
+        n_layer   = gguf_read_int64_safe(gctx, (rep.arch_name + ".block_count").c_str(), 0);
+        n_embd    = gguf_read_int64_safe(gctx, (rep.arch_name + ".embedding_length").c_str(), 0);
+        n_head    = gguf_read_int64_safe(gctx, (rep.arch_name + ".attention.head_count").c_str(), 0);
+        n_head_kv = gguf_read_int64_safe(gctx, (rep.arch_name + ".attention.head_count_kv").c_str(), n_head);
+        const int64_t default_hd = (n_head > 0 && n_embd > 0) ? (n_embd / n_head) : 128;
+        d_k       = gguf_read_int64_safe(gctx, (rep.arch_name + ".attention.key_length").c_str(), default_hd);
+        d_v       = gguf_read_int64_safe(gctx, (rep.arch_name + ".attention.value_length").c_str(), d_k);
+    }
+    rep.n_layers = static_cast<int32_t>(n_layer);
+
+    uint64_t raw_total_bytes      = 0;
+    uint64_t htp_tiled_bytes      = 0;
+    uint64_t host_embd_bytes      = 0;
+    uint64_t matrix_2d_raw_bytes  = 0;
+    uint64_t k_quant_raw_bytes    = 0;
+    uint64_t unsupp_quant_bytes   = 0;
+    std::map<enum ggml_type, uint64_t> bytes_by_type;
+    std::string first_unsupp_type;
+
+    for (int64_t i = 0; i < n_tensors; ++i) {
+        const char * tname_c = gguf_get_tensor_name(gctx, i);
+        const std::string tname = tname_c ? tname_c : "";
+        const enum ggml_type ttype = gguf_get_tensor_type(gctx, i);
+        const size_t tsize = gguf_get_tensor_size(gctx, i);
+        const int64_t * ne = gguf_get_tensor_ne(gctx, i);
+
+        raw_total_bytes += static_cast<uint64_t>(tsize);
+        bytes_by_type[ttype] += static_cast<uint64_t>(tsize);
+
+        const bool is_tok_embd =
+            (tname == "token_embd.weight" || tname == "tok_embeddings.weight" ||
+             tname.find("per_layer_token_embd") != std::string::npos);
+
+        if (is_tok_embd) {
+            host_embd_bytes += static_cast<uint64_t>(tsize);
+        } else {
+            htp_tiled_bytes += compute_htp_tensor_alloc_bytes(ttype, ne, tsize, false);
+        }
+
+        const bool is_2d_weight = ne && ne[0] >= 32 && ne[1] > 1 && !is_tok_embd;
+        if (is_2d_weight) {
+            matrix_2d_raw_bytes += static_cast<uint64_t>(tsize);
+            if (is_k_quant_type(ttype)) {
+                k_quant_raw_bytes += static_cast<uint64_t>(tsize);
+            }
+            if (!htp_supports_matmul_weight_type(ttype)) {
+                unsupp_quant_bytes += static_cast<uint64_t>(tsize);
+                if (first_unsupp_type.empty()) {
+                    const char * tn = ggml_type_name(ttype);
+                    first_unsupp_type = tn ? tn : "IQ/TQ";
+                }
+            }
+        }
+    }
+
+    if (file_size_bytes > raw_total_bytes && raw_total_bytes == 0) {
+        raw_total_bytes = file_size_bytes;
+    }
+
+    // Dominant weight quantization label
+    uint64_t best_type_bytes = 0;
+    enum ggml_type dom_type  = GGML_TYPE_F16;
+    for (const auto & kv : bytes_by_type) {
+        if (kv.second > best_type_bytes) {
+            best_type_bytes = kv.second;
+            dom_type        = kv.first;
+        }
+    }
+    const char * dom_name = ggml_type_name(dom_type);
+    rep.dominant_quant    = dom_name ? dom_name : "GGUF";
+
+    constexpr double kBytesPerMib = 1024.0 * 1024.0;
+    rep.raw_weight_bytes      = raw_total_bytes;
+    rep.htp_tiled_weights_mib = static_cast<double>(htp_tiled_bytes) / kBytesPerMib;
+    rep.host_embd_mib         = static_cast<double>(host_embd_bytes) / kBytesPerMib;
+    rep.has_k_quants          = (k_quant_raw_bytes > 0);
+    rep.has_unsupported_quants =
+        (matrix_2d_raw_bytes > 0 && unsupp_quant_bytes * 4 >= matrix_2d_raw_bytes);
+
+    // Estimate KV-cache footprint on HTP0
+    const int64_t eff_layers  = (n_layer > 0) ? n_layer : 28;
+    const int64_t eff_kv_head = (n_head_kv > 0) ? n_head_kv : 8;
+    const int64_t eff_dk      = (d_k > 0) ? d_k : 128;
+    const int64_t eff_dv      = (d_v > 0) ? d_v : 128;
+    const double  bytes_per_kv_elem = cfg.kv_q8 ? (34.0 / 32.0) : 2.0;
+    const double  kv_bytes =
+        static_cast<double>(eff_layers) *
+        static_cast<double>(std::max<int32_t>(256, cfg.n_ctx)) *
+        static_cast<double>(eff_kv_head) *
+        static_cast<double>(eff_dk + eff_dv) *
+        bytes_per_kv_elem;
+
+    rep.kv_cache_mib        = kv_bytes / kBytesPerMib;
+    rep.compute_reserve_mib = 300.0; // HTP dynamic compute buffer + skel VA + rpcmem chunk alignment
+    const double total_weights_mib = rep.htp_tiled_weights_mib + rep.host_embd_mib;
+    rep.total_required_npu_mib = total_weights_mib + rep.kv_cache_mib + rep.compute_reserve_mib;
+    rep.effective_avail_ram_mib = effective_avail_ram_mib;
+
+    const int32_t arch = (hexagon_arch > 0) ? hexagon_arch : 73;
+    const int32_t ndev = (arch < 75) ? 1 : std::max<int32_t>(1, active_htp_devices);
+
+    if (arch <= 79) {
+        // 32-bit Hexagon cDSP virtual address space (v73 = 3000 MiB, v75/v79 = 3200 MiB per HTP session)
+        const double per_dev_vmem_mib = (arch >= 75) ? 3200.0 : 3000.0;
+        rep.npu_vmem_ceiling_mib      = per_dev_vmem_mib * static_cast<double>(ndev);
+        rep.npu_weight_ceiling_mib    = (per_dev_vmem_mib - 520.0) * static_cast<double>(ndev);
+    } else {
+        // 64-bit DMA64 on Hexagon v81+ — bounded by physical RAM
+        const double sys_cap = (system_total_ram_mib > 0.0) ? (system_total_ram_mib * 0.70) : 8192.0;
+        rep.npu_vmem_ceiling_mib   = sys_cap;
+        rep.npu_weight_ceiling_mib = std::max(1024.0, sys_cap - 520.0);
+    }
+
+    // GATE 1: Reject quantizations that Hexagon HTP MUL_MAT cannot execute natively (would force forbidden CPU fallback)
+    if (rep.has_unsupported_quants) {
+        std::ostringstream err;
+        err << "Формат квантования «" << first_unsupp_type << "» не поддерживается аппаратным ядром Qualcomm Hexagon HTP NPU, "
+            << "а фоллбэк на CPU/GPU запрещён.\n\n"
+            << "Рекомендуемые форматы для Hexagon NPU:\n"
+            << "• Q4_0 (int4, симметричный 4-бит — оптимальный по скорости и памяти)\n"
+            << "• Q8_0 (int8 — максимальная точность для компактных моделей 0.5B–1.7B)";
+        rep.error_message = err.str();
+        return rep;
+    }
+
+    // GATE 2: Reject oversized models whose weights exceed Hexagon NPU cDSP VA space (e.g. 7B / 8B / 9B / 14B)
+    if (total_weights_mib > rep.npu_weight_ceiling_mib) {
+        std::ostringstream err;
+        err << "Модель слишком велика для размещения в Qualcomm Hexagon NPU";
+        if (!size_label.empty()) {
+            err << " (" << size_label << ")";
+        } else if (!model_name.empty()) {
+            err << " («" << model_name << "»)";
+        }
+        err << ".\n\n"
+            << "• Объём весов модели для NPU: " << format_mib_or_gib(total_weights_mib)
+            << " [" << rep.dominant_quant << "]\n"
+            << "• Аппаратный потолок весов Hexagon HTP v" << arch << ": "
+            << format_mib_or_gib(rep.npu_weight_ceiling_mib)
+            << " (32-бит адресное пространство cDSP " << static_cast<int>(rep.npu_vmem_ceiling_mib) << " МБ)\n\n"
+            << "Выгрузка модели в NPU остановлена до выделения DMA-памяти (вылет приложения предотвращён).\n"
+            << "Используйте модели объёмом 0.5B–3B (до 4B в чистом Q4_0) с квантованием Q4_0 (int4) или Q8_0.";
+        rep.error_message = err.str();
+        return rep;
+    }
+
+    // GATE 3: Weights fit, but Weights + KV-cache + Compute exceed Hexagon cDSP VA budget
+    if (rep.total_required_npu_mib > rep.npu_vmem_ceiling_mib) {
+        std::ostringstream err;
+        err << "Модель (" << format_mib_or_gib(total_weights_mib) << ") и KV-кэш контекста "
+            << cfg.n_ctx << " токенов (" << format_mib_or_gib(rep.kv_cache_mib)
+            << ") суммарно требуют " << format_mib_or_gib(rep.total_required_npu_mib)
+            << ", что превышает лимит адресного пространства Hexagon HTP v" << arch << " ("
+            << format_mib_or_gib(rep.npu_vmem_ceiling_mib) << ").\n\n"
+            << "Откройте «Параметры», уменьшите макс. контекст (например, до 2048) и включите квантование KV-кэша Q8_0.";
+        rep.error_message = err.str();
+        return rep;
+    }
+
+    // GATE 4: Protect against Android lmkd SIGKILL when physical MemAvailable is insufficient for pinned rpcmem DMA-BUF
+    constexpr double kAndroidLmkdReserveMib = 700.0;
+    if (effective_avail_ram_mib > 0.0 &&
+        (rep.total_required_npu_mib + kAndroidLmkdReserveMib) > effective_avail_ram_mib) {
+        std::ostringstream err;
+        err << "Недостаточно свободной оперативной памяти для закрепления буферов Hexagon NPU (RPCMEM DMA-BUF).\n\n"
+            << "• Требуется для модели и KV-кэша: ~" << format_mib_or_gib(rep.total_required_npu_mib) << "\n"
+            << "• Безопасный резерв ОС Android: " << static_cast<int>(kAndroidLmkdReserveMib) << " МБ\n"
+            << "• Свободно ОЗУ сейчас: " << format_mib_or_gib(effective_avail_ram_mib) << "\n\n"
+            << "Загрузка остановлена до выделения памяти, чтобы предотвратить принудительное завершение процесса системой Android. "
+            << "Закройте фоновые приложения, уменьшите n_ctx или выберите модель меньшего размера (0.5B–1.7B Q4_0).";
+        rep.error_message = err.str();
+        return rep;
+    }
+
+    if (rep.has_k_quants) {
+        rep.quant_warning =
+            "Обнаружено K-квантование (" + rep.dominant_quant +
+            "): включён режим совместимости NPU. Для максимальной скорости и экономии памяти Hexagon HTP рекомендуется Q4_0 (int4) или Q8_0.";
+    }
+
+    rep.ok = true;
+    return rep;
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +908,7 @@ void NpuEngine::onNativeLogLine(int level, const char * text) {
             }
         }
 
-        // 3. Parse offloaded layers ("offloaded 17/17 layers to GPU")
+        // 3. Parse offloaded layers ("offloaded 29/29 layers to GPU")
         {
             const char * key = "offloaded ";
             auto pos = line.find(key);
@@ -401,7 +945,8 @@ void NpuEngine::onNativeLogLine(int level, const char * text) {
 InitResult NpuEngine::init(
     const std::string & native_lib_dir,
     const std::string & htp_devices,
-    const std::string & power_mode) {
+    const std::string & power_mode,
+    bool allow_fp16_hmx) {
     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
 
     InitResult res{};
@@ -423,18 +968,45 @@ InitResult NpuEngine::init(
 
     ::setenv("GGML_HEXAGON_DEVICES",    clean_devices.c_str(), 1);
     ::setenv("GGML_HEXAGON_POWER_MODE", clean_power.c_str(),   1);
-    ::setenv("GGML_HEXAGON_OPPOLL",     "1",                   1);
     ::setenv("GGML_HEXAGON_HOSTBUF",    "1",                   1);
 
+    // UPSTREAM BUGFIX #31933: Never set GGML_HEXAGON_OPPOLL=1 on Android (causes zero-timeout dspqueue_read 0xc logd flood)
+    ::setenv("GGML_HEXAGON_OPPOLL",     "0",                   1);
+
+    // UPSTREAM BUGFIX #31476: HTP_OP_GET_ROWS corrupts dmin on Q4_K and Q5_K token embeddings (e.g. Qwen3-0.6B-Q4_K_M).
+    // token_embd.weight already resides in zero-copy HTP0-HOST RPCMEM; filtering GET_ROWS avoids embedding corruption
+    // while keeping 100% of Transformer layers executing on HTP0!
+    ::setenv("GGML_HEXAGON_OPFILTER",   "GET_ROWS",            1);
+
+    // UPSTREAM BUGFIX #31924: Force HVX Flash Attention on HTP0 to avoid HMX FA per-head GQA mask VTCM overwrite at pos >= 129
+    ::setenv("GGML_HEXAGON_FA_SELECT",  "1",                   1);
+
+    // UPSTREAM BUGFIX #31645 / #29473 / #29740:
+    // Hexagon v73 sub-flagship SoCs (Snapdragon 8s Gen 3 SM8635, 7 Gen 4 SM7750, 7+ Gen 3 SM7675, 6 Gen 4 SM6650)
+    // do NOT support FP16 HMX matmul/GDN (stock FP16 HMX returns inf/NaN on prefill m >= 5).
+    // Setting NHMX=0 executes 100% of NPU ops on the 4x HVX vector units inside HTP0 with identical decode tok/s and 100% accuracy!
+    if (!allow_fp16_hmx) {
+        ::setenv("GGML_HEXAGON_NHMX",       "0", 1);
+        ::setenv("GGML_HEXAGON_MM_SELECT",  "1", 1);
+        ::setenv("GGML_HEXAGON_GDN_SELECT", "1", 1);
+        ::setenv("GGML_HEXAGON_LI_SELECT",  "1", 1);
+        hmx_enabled_ = false;
+    } else {
+        ::setenv("GGML_HEXAGON_NHMX",       "1", 1);
+        ::setenv("GGML_HEXAGON_MM_SELECT",  "2", 1);
+        ::setenv("GGML_HEXAGON_GDN_SELECT", "2", 1);
+        ::setenv("GGML_HEXAGON_LI_SELECT",  "2", 1);
+        hmx_enabled_ = true;
+    }
+
     // Defense-in-depth: block all ops on OpenCL Adreno GPU even if libggml-opencl.so is in memory
-    ::setenv("GGML_OPENCL_OPFILTER",    ".*",                  1);
+    ::setenv("GGML_OPENCL_OPFILTER", ".*", 1);
 
     llama_log_set(llama_log_trampoline, nullptr);
 
     try {
         if (!backend_initialized_.load()) {
             if (!native_lib_dir.empty()) {
-                // Load dynamic backends if built with GGML_BACKEND_DL=ON
                 std::error_code ec;
                 const auto hex_so = std::filesystem::path(native_lib_dir) / "libggml-hexagon.so";
                 if (std::filesystem::exists(hex_so, ec)) {
@@ -448,7 +1020,6 @@ InitResult NpuEngine::init(
         // Enumerate ONLY Qualcomm Hexagon HTP NPU devices — strictly exclude CPU, OpenCL GPU, Vulkan, etc.
         htp_devices_.clear();
         htp_devices_null_term_.clear();
-        std::vector<std::string> labels;
 
         const size_t dev_count = ggml_backend_dev_count();
         for (size_t i = 0; i < dev_count; ++i) {
@@ -470,7 +1041,6 @@ InitResult NpuEngine::init(
 
             if (is_hexagon_htp) {
                 htp_devices_.push_back(dev);
-                labels.push_back(dev_name + " (" + dev_desc + ")");
             } else {
                 NPU_LOGI("Ignoring non-NPU device '%s' (%s, reg=%s) per strict NPU-only policy",
                          dev_name.c_str(), dev_desc.c_str(), reg_name.c_str());
@@ -491,6 +1061,11 @@ InitResult NpuEngine::init(
             ". Выполнение на CPU/GPU заблокировано политикой приложения.";
         NPU_LOGE("%s", res.error_message.c_str());
         return res;
+    } catch (...) {
+        npu_ready_.store(false);
+        res.ok = false;
+        res.error_message = "Неизвестное исключение при инициализации Qualcomm Hexagon NPU.";
+        return res;
     }
 
     int32_t arch = 0, hvx = 0, hmx = 0, vtcm = 0;
@@ -506,6 +1081,7 @@ InitResult NpuEngine::init(
 
     res.hexagon_arch   = arch;
     res.htp_device_cnt = static_cast<int32_t>(htp_devices_.size());
+    res.hmx_enabled    = hmx_enabled_ && (hmx > 0);
 
     if (htp_devices_.empty()) {
         npu_ready_.store(false);
@@ -534,8 +1110,11 @@ InitResult NpuEngine::init(
     hw << "Hexagon HTP";
     if (arch > 0) hw << " v" << arch;
     hw << " (" << active_devices_label_ << ")";
-    if (hvx > 0 || hmx > 0 || vtcm > 0) {
-        hw << " • HVX: " << hvx << " • HMX: " << hmx << " • VTCM: " << vtcm << " МБ";
+    if (hvx > 0 || vtcm > 0) {
+        hw << " • HVX: " << hvx;
+        if (res.hmx_enabled) hw << " • HMX: FP16";
+        else hw << " • Режим точности HVX";
+        if (vtcm > 0) hw << " • VTCM: " << vtcm << " МБ";
     }
     res.hw_summary = hw.str();
 
@@ -553,6 +1132,8 @@ ModelLoadResult NpuEngine::loadModelFromFd(
     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
 
     ModelLoadResult out{};
+    out.kept_previous_model = model_loaded_.load();
+
     if (detached_fd < 0) {
         out.error_message = "Некорректный файловый дескриптор выбранного файла .gguf.";
         return out;
@@ -589,16 +1170,70 @@ ModelLoadResult NpuEngine::loadModelFromFd(
     if (!validateGgufHeaderBytes(header, sizeof(header), &out.error_message)) {
         return out;
     }
-    if (std::fseek(fp, 0, SEEK_SET) != 0) {
+    if (std::fseek(fp, 0, SEEK_END) != 0) {
         out.error_message = "Выбранный источник файла не поддерживает произвольное позиционирование (seek).";
         return out;
     }
-
-    unloadModelLocked();
-    cancel_requested_.store(false);
+    const long end_pos = std::ftell(fp);
+    const uint64_t file_bytes = (end_pos > 0) ? static_cast<uint64_t>(end_pos) : 0ULL;
+    if (std::fseek(fp, 0, SEEK_SET) != 0) {
+        out.error_message = "Не удалось перемотать поток чтения файла .gguf в начало.";
+        return out;
+    }
 
     EngineConfig cfg = config;
     cfg.sanitize();
+
+    // HARD GATE 2 (ZERO-ALLOCATION PREFLIGHT): Parse GGUF metadata & check Hexagon HTP vmem + Android RAM
+    // BEFORE unloading any active model or allocating any rpcmem DMA-BUF chunks!
+    GgufPreflightReport preflight{};
+    try {
+        gguf_init_params gparams{ /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+        ScopedGguf gctx(gguf_init_from_file_ptr(fp, gparams));
+
+        const MemorySnapshot mem = readMemorySnapshot();
+        const double reclaimable_mib = npu_htp_buffer_mib_.load() + host_weight_mib_.load();
+        const double effective_avail =
+            (mem.system_avail_mib > 0.0) ? (mem.system_avail_mib + reclaimable_mib) : 0.0;
+
+        int32_t arch = 73;
+        {
+            std::lock_guard<std::mutex> lk(log_parse_mutex_);
+            if (parsed_hexagon_arch_ > 0) arch = parsed_hexagon_arch_;
+        }
+
+        preflight = evaluateGgufForHexagonNpu(
+            gctx.ctx,
+            file_bytes,
+            cfg,
+            arch,
+            static_cast<int32_t>(htp_devices_.size()),
+            effective_avail,
+            mem.system_total_mib);
+    } catch (const std::exception & e) {
+        out.error_message = std::string("Ошибка предварительного анализа GGUF: ") + e.what();
+        return out;
+    } catch (...) {
+        out.error_message = "Неизвестная ошибка при проверке структуры GGUF файла.";
+        return out;
+    }
+
+    if (!preflight.ok) {
+        NPU_LOGW("Rejected GGUF before NPU allocation: %s", preflight.error_message.c_str());
+        out.error_message = preflight.error_message;
+        return out;
+    }
+
+    if (std::fseek(fp, 0, SEEK_SET) != 0) {
+        out.error_message = "Ошибка позиционирования потока GGUF после проверки метаданных.";
+        return out;
+    }
+
+    // Now safe to unload any previous model and allocate new Hexagon HTP buffers
+    unloadModelLocked();
+    out.kept_previous_model = false;
+    cancel_requested_.store(false);
+
     ::setenv("GGML_HEXAGON_POWER_MODE", cfg.power_mode.c_str(), 1);
 
     {
@@ -613,7 +1248,7 @@ ModelLoadResult NpuEngine::loadModelFromFd(
     llama_model_params mparams = llama_model_default_params();
     // STRICT NPU PINNING: Pass ONLY Hexagon HTP devices!
     mparams.devices      = htp_devices_null_term_.data();
-    mparams.n_gpu_layers = cfg.n_npu_layers; // Always >= 1 (default 999 = all layers on Hexagon NPU)
+    mparams.n_gpu_layers = cfg.n_npu_layers;     // Always >= 1 (default 999 = all layers on Hexagon NPU)
     mparams.load_mode    = LLAMA_LOAD_MODE_NONE; // --no-mmap: required for 2D HMX/HVX tile repacking in RPCMEM
     mparams.split_mode   = (htp_devices_.size() > 1) ? LLAMA_SPLIT_MODE_LAYER : LLAMA_SPLIT_MODE_NONE;
 
@@ -625,11 +1260,15 @@ ModelLoadResult NpuEngine::loadModelFromFd(
     try {
         loaded = llama_model_load_from_file_ptr(fp, mparams);
     } catch (const std::exception & e) {
-        out.error_message = std::string("Исключение при загрузке GGUF на Hexagon NPU: ") + e.what();
+        out.error_message =
+            std::string("Не удалось разместить веса модели в памяти Qualcomm Hexagon NPU: ") + e.what();
+        return out;
+    } catch (...) {
+        out.error_message = "Критическое исключение при загрузке весов GGUF в Hexagon NPU.";
         return out;
     }
 
-    return finishModelLoadLocked(loaded, cfg);
+    return finishModelLoadLocked(loaded, cfg, preflight.quant_warning);
 }
 
 ModelLoadResult NpuEngine::loadModelFromPath(
@@ -639,6 +1278,8 @@ ModelLoadResult NpuEngine::loadModelFromPath(
     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
 
     ModelLoadResult out{};
+    out.kept_previous_model = model_loaded_.load();
+
     if (!npu_ready_.load() || htp_devices_.empty()) {
         out.error_message =
             "Загрузка модели отклонена: Qualcomm Hexagon NPU (HTP0) не активен. "
@@ -646,11 +1287,15 @@ ModelLoadResult NpuEngine::loadModelFromPath(
         return out;
     }
 
-    std::ifstream ifs(file_path, std::ios::binary);
+    std::ifstream ifs(file_path, std::ios::binary | std::ios::ate);
     if (!ifs) {
         out.error_message = "Не удалось открыть файл модели: " + file_path;
         return out;
     }
+    const auto end_pos = ifs.tellg();
+    const uint64_t file_bytes = (end_pos > 0) ? static_cast<uint64_t>(end_pos) : 0ULL;
+    ifs.seekg(0, std::ios::beg);
+
     uint8_t header[8] = {};
     ifs.read(reinterpret_cast<char *>(header), sizeof(header));
     if (ifs.gcount() != static_cast<std::streamsize>(sizeof(header))) {
@@ -662,11 +1307,52 @@ ModelLoadResult NpuEngine::loadModelFromPath(
     }
     ifs.close();
 
-    unloadModelLocked();
-    cancel_requested_.store(false);
-
     EngineConfig cfg = config;
     cfg.sanitize();
+
+    // ZERO-ALLOCATION PREFLIGHT CHECK
+    GgufPreflightReport preflight{};
+    try {
+        gguf_init_params gparams{ /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+        ScopedGguf gctx(gguf_init_from_file(file_path.c_str(), gparams));
+
+        const MemorySnapshot mem = readMemorySnapshot();
+        const double reclaimable_mib = npu_htp_buffer_mib_.load() + host_weight_mib_.load();
+        const double effective_avail =
+            (mem.system_avail_mib > 0.0) ? (mem.system_avail_mib + reclaimable_mib) : 0.0;
+
+        int32_t arch = 73;
+        {
+            std::lock_guard<std::mutex> lk(log_parse_mutex_);
+            if (parsed_hexagon_arch_ > 0) arch = parsed_hexagon_arch_;
+        }
+
+        preflight = evaluateGgufForHexagonNpu(
+            gctx.ctx,
+            file_bytes,
+            cfg,
+            arch,
+            static_cast<int32_t>(htp_devices_.size()),
+            effective_avail,
+            mem.system_total_mib);
+    } catch (const std::exception & e) {
+        out.error_message = std::string("Ошибка предварительного анализа GGUF: ") + e.what();
+        return out;
+    } catch (...) {
+        out.error_message = "Неизвестная ошибка при проверке структуры GGUF файла.";
+        return out;
+    }
+
+    if (!preflight.ok) {
+        NPU_LOGW("Rejected GGUF before NPU allocation: %s", preflight.error_message.c_str());
+        out.error_message = preflight.error_message;
+        return out;
+    }
+
+    unloadModelLocked();
+    out.kept_previous_model = false;
+    cancel_requested_.store(false);
+
     ::setenv("GGML_HEXAGON_POWER_MODE", cfg.power_mode.c_str(), 1);
 
     {
@@ -692,16 +1378,21 @@ ModelLoadResult NpuEngine::loadModelFromPath(
     try {
         loaded = llama_model_load_from_file(file_path.c_str(), mparams);
     } catch (const std::exception & e) {
-        out.error_message = std::string("Исключение при загрузке GGUF на Hexagon NPU: ") + e.what();
+        out.error_message =
+            std::string("Не удалось разместить веса модели в памяти Qualcomm Hexagon NPU: ") + e.what();
+        return out;
+    } catch (...) {
+        out.error_message = "Критическое исключение при загрузке весов GGUF в Hexagon NPU.";
         return out;
     }
 
-    return finishModelLoadLocked(loaded, cfg);
+    return finishModelLoadLocked(loaded, cfg, preflight.quant_warning);
 }
 
 ModelLoadResult NpuEngine::finishModelLoadLocked(
     llama_model * loaded_model,
-    const EngineConfig & sanitized_cfg) {
+    const EngineConfig & sanitized_cfg,
+    const std::string & preflight_quant_warning) {
     ModelLoadResult out{};
 
     if (!loaded_model) {
@@ -710,10 +1401,10 @@ ModelLoadResult NpuEngine::finishModelLoadLocked(
         } else {
             std::lock_guard<std::mutex> lk(log_parse_mutex_);
             out.error_message =
-                "Не удалось загрузить GGUF модель в память Qualcomm Hexagon NPU. "
-                "Проверьте целостность файла и достаточность свободного ОЗУ.";
+                "Не удалось выделить буферы Qualcomm Hexagon NPU для выбранной модели GGUF. "
+                "Используйте модель меньшего размера (0.5B–3B) с квантованием Q4_0 (int4) или Q8_0.";
             if (!last_hex_error_.empty()) {
-                out.error_message += "\n" + last_hex_error_;
+                out.error_message += "\nДетали драйвера: " + last_hex_error_;
             }
         }
         return out;
@@ -733,13 +1424,12 @@ ModelLoadResult NpuEngine::finishModelLoadLocked(
 
     const int32_t model_layers = llama_model_n_layer(loaded_model);
 
-    // HARD GATE 2: Verify weights were actually placed onto Hexagon HTP buffers!
+    // HARD GATE 3: Verify weights were actually placed onto Hexagon HTP buffers!
     if (log_npu_layers <= 0 && htp_mib <= 0.01) {
         llama_model_free(loaded_model);
         out.error_message =
             "ОШИБКА NPU-ВЕРИФИКАЦИИ: Ни один слой модели не был размещён в буферах Hexagon HTP0! "
-            "Запуск чисто на CPU заблокирован. Используйте модель с поддерживаемым NPU квантованием "
-            "(рекомендуется Q4_0, Q8_0, Q4_K_M, IQ4_NL или F16).";
+            "Запуск чисто на CPU заблокирован. Используйте модель с нативным квантованием NPU: Q4_0 (int4) или Q8_0.";
         return out;
     }
 
@@ -779,6 +1469,7 @@ ModelLoadResult NpuEngine::finishModelLoadLocked(
     out.htp_buffer_mib  = htp_mib;
     out.host_buffer_mib = cpu_mib;
     out.npu_device_used = active_devices_label_;
+    out.quant_warning   = preflight_quant_warning;
 
     NPU_LOGI("Model loaded on Hexagon NPU (%s): %s [%s], NPU layers %d/%d, HTP buffer %.2f MiB, n_ctx=%d",
              out.npu_device_used.c_str(),
@@ -816,7 +1507,7 @@ bool NpuEngine::recreateContextLocked(const EngineConfig & cfg, std::string * er
     cparams.n_threads       = cfg.n_threads;
     cparams.n_threads_batch = cfg.n_threads;
     cparams.offload_kqv     = true; // Keep KV-cache & attention KQV on Hexagon NPU!
-    cparams.op_offload      = true; // Offload host tensor ops to Hexagon NPU!
+    cparams.op_offload      = true; // Offload tensor ops to Hexagon NPU (except GET_ROWS via OPFILTER)!
     cparams.no_perf         = false;
 
     if (cfg.flash_attn_mode > 0) {
@@ -841,12 +1532,17 @@ bool NpuEngine::recreateContextLocked(const EngineConfig & cfg, std::string * er
             *err_out = std::string("Ошибка выделения контекста на Hexagon NPU: ") + e.what();
         }
         return false;
+    } catch (...) {
+        if (err_out) {
+            *err_out = "Неизвестное исключение при выделении контекста на Hexagon NPU.";
+        }
+        return false;
     }
 
     if (!ctx_) {
         if (err_out) {
             *err_out = "Не удалось выделить KV-кэш контекста (" + std::to_string(cfg.n_ctx) +
-                       " токенов) на Hexagon NPU. Попробуйте уменьшить макс. контекст или включить Q8_0 KV-кэш.";
+                       " токенов) в памяти Hexagon NPU. Уменьшите макс. контекст до 2048 или включите Q8_0 KV-кэш.";
         }
         return false;
     }
@@ -926,6 +1622,13 @@ bool NpuEngine::applyConfig(const EngineConfig & config, std::string * err_out) 
         if (cfg.n_threads != active_config_.n_threads) {
             llama_set_n_threads(ctx_, cfg.n_threads, cfg.n_threads);
         }
+        if (cfg.enable_thinking != active_config_.enable_thinking) {
+            // Reset prefix cache cleanly if Qwen3 <think> mode changed
+            llama_memory_t mem = llama_get_memory(ctx_);
+            if (mem) llama_memory_clear(mem, false);
+            session_tokens_.clear();
+            context_used_tokens_.store(0);
+        }
         rebuildSamplerLocked(cfg);
     }
 
@@ -995,7 +1698,7 @@ int32_t NpuEngine::countTokens(const std::string & text) const {
     if (!vocab_) {
         return 0;
     }
-    const auto toks = tokenize_string(vocab_, text, /*add_special=*/false, /*parse_special=*/true);
+    const auto toks = tokenize_plain_text(vocab_, text);
     return static_cast<int32_t>(toks.size());
 }
 
@@ -1025,7 +1728,6 @@ GenerationStats NpuEngine::generateReply(
     EngineConfig cfg = config;
     cfg.sanitize();
 
-    // Apply runtime config updates if needed
     if (cfg.n_ctx != active_config_.n_ctx ||
         cfg.n_batch != active_config_.n_batch ||
         cfg.flash_attn_mode != active_config_.flash_attn_mode ||
@@ -1046,26 +1748,24 @@ GenerationStats NpuEngine::generateReply(
     const int32_t n_ctx_limit = static_cast<int32_t>(llama_n_ctx(ctx_));
     stats.context_max_tokens = n_ctx_limit;
 
-    // Reserve space for generated tokens (at least 64 tokens, up to half of context)
     const int32_t min_reserve = std::min(std::max(64, std::min(cfg.max_new_tokens, 256)), n_ctx_limit / 2);
     const int32_t max_prompt_tokens = std::max(32, n_ctx_limit - min_reserve);
 
-    // Build message list & trim oldest turns if conversation approaches max context
+    const char * raw_tmpl = llama_model_chat_template(model_, nullptr);
     std::vector<ChatTurnMessage> working_msgs = messages;
     std::vector<llama_token> prompt_tokens;
 
     while (true) {
-        const std::string formatted = format_chat_messages(model_, working_msgs);
-        prompt_tokens = tokenize_string(vocab_, formatted, /*add_special=*/true, /*parse_special=*/true);
+        const std::string formatted =
+            formatChatPromptWithTemplate(raw_tmpl, working_msgs, cfg.enable_thinking);
+        prompt_tokens = tokenize_prompt_smart(vocab_, formatted);
 
         if (static_cast<int32_t>(prompt_tokens.size()) <= max_prompt_tokens) {
             break;
         }
 
-        // Find earliest removable turn (preserve optional leading system prompt + latest user message)
         const size_t first_removable = (!working_msgs.empty() && working_msgs[0].role == "system") ? 1 : 0;
         if (working_msgs.size() <= first_removable + 1) {
-            // Even a single user message exceeds max_prompt_tokens — truncate leading tokens of the prompt safely
             if (static_cast<int32_t>(prompt_tokens.size()) > max_prompt_tokens) {
                 prompt_tokens.erase(
                     prompt_tokens.begin(),
@@ -1073,7 +1773,7 @@ GenerationStats NpuEngine::generateReply(
             }
             break;
         }
-        // Drop oldest message (or user+assistant pair)
+
         size_t drop_count = 1;
         if (working_msgs.size() > first_removable + 2 &&
             working_msgs[first_removable].role == "user" &&
@@ -1098,7 +1798,6 @@ GenerationStats NpuEngine::generateReply(
     while (common_prefix < max_common && session_tokens_[common_prefix] == prompt_tokens[common_prefix]) {
         ++common_prefix;
     }
-    // Always re-evaluate at least the final token so fresh logits are available for sampling!
     if (common_prefix == prompt_tokens.size() && common_prefix > 0) {
         --common_prefix;
     }
@@ -1116,7 +1815,6 @@ GenerationStats NpuEngine::generateReply(
             }
         }
         if (!trimmed) {
-            // Hybrid / recurrent models may not support partial seq_rm — full reset
             if (mem) llama_memory_clear(mem, false);
             common_prefix = 0;
         }
@@ -1125,7 +1823,6 @@ GenerationStats NpuEngine::generateReply(
 
     stats.cached_tokens = static_cast<int32_t>(common_prefix);
 
-    // Feed historical tokens to penalty sampler state
     llama_sampler_reset(sampler_);
     for (llama_token tok : prompt_tokens) {
         llama_sampler_accept(sampler_, tok);
@@ -1134,7 +1831,7 @@ GenerationStats NpuEngine::generateReply(
     const int32_t batch_cap = std::max<int32_t>(1, static_cast<int32_t>(llama_n_batch(ctx_)));
     ScopedBatch sbatch(batch_cap);
 
-    // Prefill uncached prompt tokens on Hexagon NPU
+    // Prefill uncached prompt tokens on Hexagon NPU (wrapped in try/catch to guard lazy fastrpc_mmap!)
     const auto t_prefill_start = std::chrono::steady_clock::now();
     const int32_t new_prompt_count = static_cast<int32_t>(prompt_tokens.size() - common_prefix);
 
@@ -1160,7 +1857,25 @@ GenerationStats NpuEngine::generateReply(
             sbatch.batch.logits[i]    = (global_idx + 1 == prompt_tokens.size()) ? 1 : 0;
         }
 
-        const int32_t rc = llama_decode(ctx_, sbatch.batch);
+        int32_t rc = -1;
+        try {
+            rc = llama_decode(ctx_, sbatch.batch);
+        } catch (const std::exception & e) {
+            if (mem) llama_memory_clear(mem, false);
+            session_tokens_.clear();
+            context_used_tokens_.store(0);
+            stats.error_message =
+                std::string("Ошибка аппаратного маппинга/выполнения на Hexagon NPU (fastrpc): ") + e.what() +
+                ". Попробуйте уменьшить макс. контекст или использовать более компактную модель Q4_0.";
+            return stats;
+        } catch (...) {
+            if (mem) llama_memory_clear(mem, false);
+            session_tokens_.clear();
+            context_used_tokens_.store(0);
+            stats.error_message = "Критическое исключение драйвера Hexagon NPU при обработке промпта.";
+            return stats;
+        }
+
         if (rc == 2 || cancel_requested_.load(std::memory_order_relaxed)) {
             stats.stopped_by_user     = true;
             stats.ok                  = true;
@@ -1197,12 +1912,27 @@ GenerationStats NpuEngine::generateReply(
             break;
         }
         if (static_cast<int32_t>(session_tokens_.size()) >= n_ctx_limit - 1) {
-            // Reached max context window
             break;
         }
 
-        const llama_token next_tok = llama_sampler_sample(sampler_, ctx_, -1);
-        llama_sampler_accept(sampler_, next_tok);
+        // Guard against NaN/Inf logits before sampling
+        if (!check_logits_finite(ctx_, vocab_)) {
+            if (mem) llama_memory_clear(mem, false);
+            session_tokens_.clear();
+            context_used_tokens_.store(0);
+            stats.error_message =
+                "Обнаружено переполнение логитов (NaN/Inf) на NPU. Рекомендуется использовать модель в формате Q4_0 (int4) или Q8_0.";
+            return stats;
+        }
+
+        llama_token next_tok = LLAMA_TOKEN_NULL;
+        try {
+            next_tok = llama_sampler_sample(sampler_, ctx_, -1);
+            llama_sampler_accept(sampler_, next_tok);
+        } catch (const std::exception & e) {
+            stats.error_message = std::string("Ошибка сэмплирования токена: ") + e.what();
+            return stats;
+        }
 
         if (llama_vocab_is_eog(vocab_, next_tok)) {
             break;
@@ -1232,7 +1962,6 @@ GenerationStats NpuEngine::generateReply(
 
         ++gen_count;
 
-        // Advance KV cache with sampled token unless this is the final step
         if (step + 1 < cfg.max_new_tokens &&
             static_cast<int32_t>(session_tokens_.size()) < n_ctx_limit - 1 &&
             !cancel_requested_.load(std::memory_order_relaxed)) {
@@ -1243,7 +1972,18 @@ GenerationStats NpuEngine::generateReply(
             sbatch.batch.seq_id[0][0] = 0;
             sbatch.batch.logits[0]    = 1;
 
-            const int32_t rc = llama_decode(ctx_, sbatch.batch);
+            int32_t rc = -1;
+            try {
+                rc = llama_decode(ctx_, sbatch.batch);
+            } catch (const std::exception & e) {
+                stats.error_message =
+                    std::string("Ошибка выполнения шага генерации на Hexagon NPU: ") + e.what();
+                return stats;
+            } catch (...) {
+                stats.error_message = "Критическое исключение Hexagon NPU при генерации токена.";
+                return stats;
+            }
+
             if (rc == 2 || cancel_requested_.load(std::memory_order_relaxed)) {
                 stats.stopped_by_user = true;
                 break;
@@ -1279,7 +2019,6 @@ GenerationStats NpuEngine::generateReply(
 MemorySnapshot NpuEngine::readMemorySnapshot() const {
     MemorySnapshot snap{};
 
-    // Read Linux/Android process physical RAM (VmRSS, VmHWM, VmSwap) from /proc/self/status
     {
         std::ifstream status_in("/proc/self/status");
         std::string line;
@@ -1301,7 +2040,6 @@ MemorySnapshot NpuEngine::readMemorySnapshot() const {
         }
     }
 
-    // Read system total/available RAM from /proc/meminfo
     {
         std::ifstream meminfo_in("/proc/meminfo");
         std::string line;

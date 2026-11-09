@@ -4,7 +4,6 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import androidx.fragment.app.activityViewModels
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -22,7 +21,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
     private var _binding: SheetModelSettingsBinding? = null
     private val binding get() = _binding!!
 
-    private val viewModel: ChatViewModel by activityViewModels()
+    private val viewModel: ChatViewModel get() = (requireActivity().application as ru.npu.llamachat.NpuApplication).session
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -85,6 +84,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
 
         binding.switchFlashAttn.isChecked = cfg.flashAttnMode > 0
         binding.switchKvQ8.isChecked = cfg.kvCacheQ8
+        binding.switchThinkingMode.isChecked = cfg.enableThinking
         binding.etSystemPrompt.setText(cfg.systemPrompt)
     }
 
@@ -176,6 +176,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
                 seed = parsedSeed,
                 flashAttnMode = if (binding.switchFlashAttn.isChecked) 1 else 0,
                 kvCacheQ8 = binding.switchKvQ8.isChecked,
+                enableThinking = binding.switchThinkingMode.isChecked,
                 powerMode = readSelectedPowerMode(),
                 systemPrompt = sysPrompt
             ).sanitized()

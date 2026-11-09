@@ -142,6 +142,7 @@ npu::EngineConfig extract_config(
     jint seed,
     jint flash_attn_mode,
     jboolean kv_q8,
+    jboolean enable_thinking,
     jstring power_mode,
     jstring htp_devices,
     jstring system_prompt) {
@@ -160,6 +161,7 @@ npu::EngineConfig extract_config(
     cfg.seed            = seed;
     cfg.flash_attn_mode = flash_attn_mode;
     cfg.kv_q8           = (kv_q8 == JNI_TRUE);
+    cfg.enable_thinking = (enable_thinking == JNI_TRUE);
     cfg.power_mode      = jstring_to_utf8(env, power_mode);
     cfg.htp_devices     = jstring_to_utf8(env, htp_devices);
     cfg.system_prompt   = jstring_to_utf8(env, system_prompt);
@@ -173,18 +175,20 @@ jobject make_model_load_result(JNIEnv * env, const npu::ModelLoadResult & r) {
     jmethodID ctor = env->GetMethodID(
         cls,
         "<init>",
-        "(ZLjava/lang/String;Ljava/lang/String;JJIIIIDDLjava/lang/String;Ljava/lang/String;)V");
+        "(ZZLjava/lang/String;Ljava/lang/String;JJIIIIDDLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
     if (!ctor) return nullptr;
 
     jstring j_desc  = utf8_to_jstring(env, r.model_desc);
     jstring j_quant = utf8_to_jstring(env, r.quant_name);
     jstring j_dev   = utf8_to_jstring(env, r.npu_device_used);
+    jstring j_warn  = utf8_to_jstring(env, r.quant_warning);
     jstring j_err   = utf8_to_jstring(env, r.error_message);
 
     jobject obj = env->NewObject(
         cls,
         ctor,
         r.ok ? JNI_TRUE : JNI_FALSE,
+        r.kept_previous_model ? JNI_TRUE : JNI_FALSE,
         j_desc,
         j_quant,
         static_cast<jlong>(r.model_bytes),
@@ -196,11 +200,13 @@ jobject make_model_load_result(JNIEnv * env, const npu::ModelLoadResult & r) {
         static_cast<jdouble>(r.htp_buffer_mib),
         static_cast<jdouble>(r.host_buffer_mib),
         j_dev,
+        j_warn,
         j_err);
 
     env->DeleteLocalRef(j_desc);
     env->DeleteLocalRef(j_quant);
     env->DeleteLocalRef(j_dev);
+    env->DeleteLocalRef(j_warn);
     env->DeleteLocalRef(j_err);
     env->DeleteLocalRef(cls);
     return obj;
@@ -216,20 +222,25 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeInitNpu(
     jobject /*thiz*/,
     jstring j_native_lib_dir,
     jstring j_htp_devices,
-    jstring j_power_mode) {
+    jstring j_power_mode,
+    jboolean j_allow_fp16_hmx) {
 
     const std::string lib_dir = jstring_to_utf8(env, j_native_lib_dir);
     const std::string devs    = jstring_to_utf8(env, j_htp_devices);
     const std::string pmode   = jstring_to_utf8(env, j_power_mode);
 
-    const npu::InitResult res = get_engine().init(lib_dir, devs, pmode);
+    const npu::InitResult res = get_engine().init(
+        lib_dir,
+        devs,
+        pmode,
+        j_allow_fp16_hmx == JNI_TRUE);
 
     jclass cls = env->FindClass("ru/npu/llamachat/engine/NativeInitResult");
     if (!cls) return nullptr;
     jmethodID ctor = env->GetMethodID(
         cls,
         "<init>",
-        "(ZIIZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
+        "(ZIIZZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
     if (!ctor) return nullptr;
 
     jstring j_active = utf8_to_jstring(env, res.active_devices);
@@ -243,6 +254,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeInitNpu(
         static_cast<jint>(res.hexagon_arch),
         static_cast<jint>(res.htp_device_cnt),
         res.has_v73_skel ? JNI_TRUE : JNI_FALSE,
+        res.hmx_enabled ? JNI_TRUE : JNI_FALSE,
         j_active,
         j_hw,
         j_err);
@@ -274,6 +286,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeLoadModelFromFd(
     jint seed,
     jint flash_attn_mode,
     jboolean kv_q8,
+    jboolean enable_thinking,
     jstring j_power_mode,
     jstring j_htp_devices,
     jstring j_system_prompt,
@@ -283,7 +296,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeLoadModelFromFd(
     const npu::EngineConfig cfg = extract_config(
         env, n_ctx, max_new_tokens, n_batch, n_threads, n_npu_layers,
         temperature, top_p, top_k, min_p, repeat_penalty, repeat_last_n,
-        seed, flash_attn_mode, kv_q8, j_power_mode, j_htp_devices, j_system_prompt);
+        seed, flash_attn_mode, kv_q8, enable_thinking, j_power_mode, j_htp_devices, j_system_prompt);
 
     jmethodID on_prog_mid = nullptr;
     if (j_progress_listener) {
@@ -324,6 +337,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeLoadModelFromPath(
     jint seed,
     jint flash_attn_mode,
     jboolean kv_q8,
+    jboolean enable_thinking,
     jstring j_power_mode,
     jstring j_htp_devices,
     jstring j_system_prompt,
@@ -333,7 +347,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeLoadModelFromPath(
     const npu::EngineConfig cfg = extract_config(
         env, n_ctx, max_new_tokens, n_batch, n_threads, n_npu_layers,
         temperature, top_p, top_k, min_p, repeat_penalty, repeat_last_n,
-        seed, flash_attn_mode, kv_q8, j_power_mode, j_htp_devices, j_system_prompt);
+        seed, flash_attn_mode, kv_q8, enable_thinking, j_power_mode, j_htp_devices, j_system_prompt);
 
     jmethodID on_prog_mid = nullptr;
     if (j_progress_listener) {
@@ -372,6 +386,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeApplyConfig(
     jint seed,
     jint flash_attn_mode,
     jboolean kv_q8,
+    jboolean enable_thinking,
     jstring j_power_mode,
     jstring j_htp_devices,
     jstring j_system_prompt) {
@@ -379,7 +394,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeApplyConfig(
     const npu::EngineConfig cfg = extract_config(
         env, n_ctx, max_new_tokens, n_batch, n_threads, n_npu_layers,
         temperature, top_p, top_k, min_p, repeat_penalty, repeat_last_n,
-        seed, flash_attn_mode, kv_q8, j_power_mode, j_htp_devices, j_system_prompt);
+        seed, flash_attn_mode, kv_q8, enable_thinking, j_power_mode, j_htp_devices, j_system_prompt);
 
     std::string err;
     const bool ok = get_engine().applyConfig(cfg, &err);
@@ -406,6 +421,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeGenerate(
     jint seed,
     jint flash_attn_mode,
     jboolean kv_q8,
+    jboolean enable_thinking,
     jstring j_power_mode,
     jstring j_htp_devices,
     jstring j_system_prompt,
@@ -433,7 +449,7 @@ Java_ru_npu_llamachat_engine_NpuLlamaBridge_nativeGenerate(
     const npu::EngineConfig cfg = extract_config(
         env, n_ctx, max_new_tokens, n_batch, n_threads, n_npu_layers,
         temperature, top_p, top_k, min_p, repeat_penalty, repeat_last_n,
-        seed, flash_attn_mode, kv_q8, j_power_mode, j_htp_devices, j_system_prompt);
+        seed, flash_attn_mode, kv_q8, enable_thinking, j_power_mode, j_htp_devices, j_system_prompt);
 
     jmethodID on_token_mid = nullptr;
     if (j_token_listener) {

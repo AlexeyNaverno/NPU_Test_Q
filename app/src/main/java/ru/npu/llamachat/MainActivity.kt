@@ -1,5 +1,9 @@
 package ru.npu.llamachat
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -7,29 +11,35 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
+import com.google.android.material.tabs.TabLayout
+import ru.npu.llamachat.api.ApiService
 import kotlinx.coroutines.launch
 import ru.npu.llamachat.databinding.ActivityMainBinding
 import ru.npu.llamachat.ui.ChatAdapter
 import ru.npu.llamachat.ui.ChatUiState
 import ru.npu.llamachat.ui.ChatViewModel
 import ru.npu.llamachat.ui.SettingsBottomSheet
+import ru.npu.llamachat.ui.UiAlertDialogEvent
 import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private val viewModel: ChatViewModel by viewModels()
+    private val viewModel: ChatViewModel get() = (application as NpuApplication).session
     private val chatAdapter = ChatAdapter()
+    private var activeAlertDialog: AlertDialog? = null
 
     /**
      * Выбор .gguf файла через системный Storage Access Framework (DocumentsUI) без запроса лишних разрешений.
@@ -42,6 +52,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startApi() else Snackbar.make(binding.root, "Для управления API в фоне разрешите уведомления", Snackbar.LENGTH_LONG).show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -50,9 +64,55 @@ class MainActivity : AppCompatActivity() {
 
         applyWindowInsets()
         setupToolbar()
+        setupTabsAndApi()
         setupRecyclerView()
         setupInputControls()
         observeViewModel()
+        if (intent?.action == ApiService.LOAD) launchGgufPicker()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == ApiService.LOAD) launchGgufPicker()
+    }
+
+    private fun setupTabsAndApi() {
+        binding.tabs.addTab(binding.tabs.newTab().setText("Чат"))
+        binding.tabs.addTab(binding.tabs.newTab().setText("API"))
+        binding.tabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: TabLayout.Tab) {
+                binding.chatPanel.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
+                binding.apiPanel.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
+            }
+            override fun onTabUnselected(tab: TabLayout.Tab) = Unit
+            override fun onTabReselected(tab: TabLayout.Tab) = Unit
+        })
+        binding.btnApiStart.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else startApi()
+        }
+        binding.btnApiStop.setOnClickListener { stopService(Intent(this, ApiService::class.java)) }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { ApiService.running.collect { running ->
+                    binding.tvApiStatus.text = if (running) "API запущен: http://127.0.0.1:8765" else "API остановлен"
+                    binding.btnApiStart.isEnabled = !running
+                    binding.btnApiStop.isEnabled = running
+                } }
+                launch { ApiService.apiToken.collect { token -> binding.tvApiToken.text = if (token.isNotEmpty()) "Bearer token: $token" else "" } }
+                launch { ApiService.error.collect { if (it.isNotBlank()) Snackbar.make(binding.root, it, Snackbar.LENGTH_LONG).show() } }
+            }
+        }
+    }
+
+    private fun startApi() {
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, ApiService::class.java))
+        } catch (e: Exception) {
+            Snackbar.make(binding.root, "Не удалось запустить сервис: ${e.message}", Snackbar.LENGTH_LONG).show()
+        }
     }
 
     private fun applyWindowInsets() {
@@ -71,6 +131,10 @@ class MainActivity : AppCompatActivity() {
             when (item.itemId) {
                 R.id.action_pick_model -> {
                     launchGgufPicker()
+                    true
+                }
+                R.id.action_unload_model -> {
+                    viewModel.unloadModel()
                     true
                 }
                 R.id.action_clear_chat -> {
@@ -138,6 +202,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchGgufPicker() {
         val state = viewModel.uiState.value
+        if (state.isLoadingModel || state.isUnloadingModel) return
         if (!state.npuStatus.ready && !state.npuInitializing) {
             Snackbar.make(
                 binding.root,
@@ -155,6 +220,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showDiagnosticDialog(event: UiAlertDialogEvent) {
+        if (isFinishing || isDestroyed) return
+        activeAlertDialog?.dismiss()
+        val builder = MaterialAlertDialogBuilder(this)
+            .setTitle(event.title)
+            .setMessage(event.message)
+            .setPositiveButton("Понятно", null)
+        if (event.offerSettingsAction) {
+            builder.setNeutralButton("Параметры NPU") { _, _ ->
+                openSettingsSheet()
+            }
+        }
+        activeAlertDialog = builder.show()
+    }
+
     private fun observeViewModel() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -166,6 +246,11 @@ class MainActivity : AppCompatActivity() {
                 launch {
                     viewModel.events.collect { message ->
                         Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+                    }
+                }
+                launch {
+                    viewModel.alertDialogs.collect { dialogEvent ->
+                        showDiagnosticDialog(dialogEvent)
                     }
                 }
             }
@@ -182,8 +267,9 @@ class MainActivity : AppCompatActivity() {
             }
             npu.ready -> {
                 val archStr = if (npu.hexagonArch > 0) "v${npu.hexagonArch}" else "HTP"
+                val engineMode = if (npu.hmxEnabled) "HMX+HVX" else "HVX"
                 binding.tvNpuBadge.text =
-                    "NPU АКТИВЕН • ${npu.socReport.marketingName} • ${npu.activeDevices} ($archStr)"
+                    "NPU АКТИВЕН • ${npu.socReport.marketingName} • ${npu.activeDevices} ($archStr $engineMode)"
                 binding.cardNpuBlockedBanner.visibility = View.GONE
             }
             else -> {
@@ -193,6 +279,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        binding.topAppBar.menu.findItem(R.id.action_unload_model).isEnabled =
+            state.loadedModel != null && !state.isLoadingModel && !state.isUnloadingModel && !state.isApiGenerating
+
         // 2. Loaded Model Status & Progress
         val model = state.loadedModel
         if (state.isLoadingModel) {
@@ -200,12 +289,12 @@ class MainActivity : AppCompatActivity() {
             binding.progressModelLoad.visibility = View.VISIBLE
             binding.progressModelLoad.setProgressCompat(pct, true)
             binding.tvLoadProgressLabel.visibility = View.VISIBLE
-            binding.tvLoadProgressLabel.text = "Загрузка весов в Hexagon NPU RPCMEM: $pct%"
+            binding.tvLoadProgressLabel.text = "Проверка и загрузка весов в Hexagon NPU RPCMEM: $pct%"
             binding.btnSelectGgufHeader.isEnabled = false
         } else {
             binding.progressModelLoad.visibility = View.GONE
             binding.tvLoadProgressLabel.visibility = View.GONE
-            binding.btnSelectGgufHeader.isEnabled = npu.ready
+            binding.btnSelectGgufHeader.isEnabled = npu.ready && !state.isUnloadingModel
         }
 
         if (model != null) {
@@ -287,18 +376,20 @@ class MainActivity : AppCompatActivity() {
                 !npu.ready && !state.npuInitializing ->
                     "Устройство не прошло проверку Qualcomm Hexagon NPU. Выполнение на CPU/GPU отключено."
                 model == null ->
-                    "Выберите локальный файл модели .gguf (рекомендуются Q4_0 / Q8_0 / Q4_K_M для Hexagon HTP v73 на Snapdragon 8s Gen 3). История диалога хранится только в ОЗУ и удаляется при закрытии."
+                    "Выберите локальный файл модели .gguf размера 0.5B–3B (до ~2.4 ГБ).\nОптимальное квантование для Hexagon HTP NPU: Q4_0 (int4) или Q8_0 (int8). История хранится только в ОЗУ."
+                model.quantWarning.isNotBlank() ->
+                    "Модель «${model.fileName}» готова на ${model.npuDeviceUsed} (контекст ${model.nCtxActive} ток.).\n💡 ${model.quantWarning}"
                 else ->
                     "Модель «${model.fileName}» готова к работе на ${model.npuDeviceUsed} (макс. контекст ${model.nCtxActive} токенов). Напишите сообщение ниже."
             }
-            binding.btnPickModelEmpty.isEnabled = npu.ready && !state.isLoadingModel
+            binding.btnPickModelEmpty.isEnabled = npu.ready && !state.isLoadingModel && !state.isUnloadingModel
         } else {
             binding.layoutEmptyState.visibility = View.GONE
             binding.rvMessages.visibility = View.VISIBLE
         }
 
         // 7. Input Field & Send / Stop Button
-        val canChat = npu.ready && model != null && !state.isLoadingModel
+        val canChat = npu.ready && model != null && !state.isLoadingModel && !state.isUnloadingModel && !state.isApiGenerating
         binding.etPromptInput.isEnabled = canChat && !state.isGenerating
         if (state.isGenerating || state.isLoadingModel) {
             binding.btnSendOrStop.isEnabled = true
@@ -310,12 +401,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        if (isFinishing) {
-            // При закрытии приложения гарантированно выгружаем буферы Hexagon NPU
-            if (ru.npu.llamachat.engine.NpuLlamaBridge.ensureLibrariesLoaded()) {
-                ru.npu.llamachat.engine.NpuLlamaBridge.nativeCancelGeneration()
-                ru.npu.llamachat.engine.NpuLlamaBridge.nativeUnloadModel()
-            }
+        activeAlertDialog?.dismiss()
+        activeAlertDialog = null
+        if (isFinishing && !ru.npu.llamachat.api.ApiService.running.value) {
+            viewModel.unloadModel()
         }
         super.onDestroy()
     }

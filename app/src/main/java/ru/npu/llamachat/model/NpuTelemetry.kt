@@ -15,7 +15,8 @@ data class LoadedModelInfo(
     val nLayersTotal: Int,
     val htpBufferMib: Double,
     val hostBufferMib: Double,
-    val npuDeviceUsed: String
+    val npuDeviceUsed: String,
+    val quantWarning: String = ""
 )
 
 data class TokenStats(
