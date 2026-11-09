@@ -44,6 +44,7 @@ data class ChatUiState(
     val config: ModelConfig = ModelConfig(),
     val isLoadingModel: Boolean = false,
     val isUnloadingModel: Boolean = false,
+    val isApiGenerating: Boolean = false,
     val loadProgress: Float = 0f,
     val loadedModel: LoadedModelInfo? = null,
     val isGenerating: Boolean = false,
@@ -140,7 +141,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
-        if (state.isLoadingModel || state.isUnloadingModel) return
+        if (state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating) return
 
         val hadModelBefore = state.loadedModel != null
         generationJob?.cancel()
@@ -212,7 +213,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** Освобождает веса и KV-кэш, не завершая приложение. */
     fun unloadModel() {
         val state = _uiState.value
-        if (state.loadedModel == null || state.isLoadingModel || state.isUnloadingModel) return
+        if (state.loadedModel == null || state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating) return
         _uiState.update { it.copy(isUnloadingModel = true) }
         engine.cancelGeneration()
         generationJob?.cancel()
@@ -234,6 +235,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Вызывается с главного потока; входная история живёт только до завершения запроса. */
+    suspend fun generateForApi(history: List<ChatMessage>, systemPrompt: String?): Pair<String, ru.npu.llamachat.engine.NativeGenerationStats> {
+        val state = _uiState.value
+        check(state.npuStatus.ready && state.loadedModel != null) { "Модель не загружена на NPU" }
+        check(!state.isGenerating && !state.isApiGenerating && !state.isLoadingModel && !state.isUnloadingModel) { "NPU занят" }
+        _uiState.update { it.copy(isApiGenerating = true) }
+        try {
+            val output = StringBuilder()
+            val config = if (systemPrompt == null) state.config else state.config.copy(systemPrompt = systemPrompt)
+            val stats = engine.generateReply(history, config) { piece -> output.append(piece); true }
+            check(stats.ok && !stats.stoppedByUser) { stats.errorMessage.ifBlank { "Генерация остановлена" } }
+            return output.toString() to stats
+        } finally {
+            _uiState.update { it.copy(isApiGenerating = false) }
+            refreshRamOnce()
+        }
+    }
+
     fun cancelActiveTask() {
         engine.cancelGeneration()
     }
@@ -251,10 +270,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _events.tryEmit("Сначала выберите файл модели .gguf.")
             return
         }
-        if (cur.isGenerating || cur.isLoadingModel || cur.isUnloadingModel) {
+        if (cur.isGenerating || cur.isLoadingModel || cur.isUnloadingModel || cur.isApiGenerating) {
             return
         }
 
+        _uiState.update { it.copy(isGenerating = true) }
         generationJob = viewModelScope.launch {
             val userTokens = engine.countTokens(text)
             val userMsg = ChatMessage(
@@ -370,6 +390,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Полная очистка эфемерного чата и сброс KV-кэша на Hexagon NPU.
      */
     fun clearChat() {
+        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel) return
         engine.cancelGeneration()
         generationJob?.cancel()
         viewModelScope.launch {
@@ -391,6 +412,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateModelConfig(newConfig: ModelConfig) {
+        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel || _uiState.value.isLoadingModel) return
         val clean = newConfig.sanitized()
         val prev = _uiState.value.config
         val contextRecreated = _uiState.value.loadedModel != null && (

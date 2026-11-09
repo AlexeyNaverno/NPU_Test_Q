@@ -4,7 +4,6 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import androidx.fragment.app.activityViewModels
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -22,7 +21,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
     private var _binding: SheetModelSettingsBinding? = null
     private val binding get() = _binding!!
 
-    private val viewModel: ChatViewModel by activityViewModels()
+    private val viewModel: ChatViewModel get() = (requireActivity().application as ru.npu.llamachat.NpuApplication).session
 
     override fun onCreateView(
         inflater: LayoutInflater,

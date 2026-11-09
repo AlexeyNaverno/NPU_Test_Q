@@ -1,5 +1,9 @@
 package ru.npu.llamachat
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -7,9 +11,9 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
@@ -18,6 +22,8 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
+import com.google.android.material.tabs.TabLayout
+import ru.npu.llamachat.api.ApiService
 import kotlinx.coroutines.launch
 import ru.npu.llamachat.databinding.ActivityMainBinding
 import ru.npu.llamachat.ui.ChatAdapter
@@ -31,7 +37,7 @@ import kotlin.math.roundToInt
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private val viewModel: ChatViewModel by viewModels()
+    private val viewModel: ChatViewModel get() = (application as NpuApplication).session
     private val chatAdapter = ChatAdapter()
     private var activeAlertDialog: AlertDialog? = null
 
@@ -46,6 +52,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startApi() else Snackbar.make(binding.root, "Для управления API в фоне разрешите уведомления", Snackbar.LENGTH_LONG).show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -54,9 +64,55 @@ class MainActivity : AppCompatActivity() {
 
         applyWindowInsets()
         setupToolbar()
+        setupTabsAndApi()
         setupRecyclerView()
         setupInputControls()
         observeViewModel()
+        if (intent?.action == ApiService.LOAD) launchGgufPicker()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == ApiService.LOAD) launchGgufPicker()
+    }
+
+    private fun setupTabsAndApi() {
+        binding.tabs.addTab(binding.tabs.newTab().setText("Чат"))
+        binding.tabs.addTab(binding.tabs.newTab().setText("API"))
+        binding.tabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: TabLayout.Tab) {
+                binding.chatPanel.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
+                binding.apiPanel.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
+            }
+            override fun onTabUnselected(tab: TabLayout.Tab) = Unit
+            override fun onTabReselected(tab: TabLayout.Tab) = Unit
+        })
+        binding.btnApiStart.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else startApi()
+        }
+        binding.btnApiStop.setOnClickListener { stopService(Intent(this, ApiService::class.java)) }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { ApiService.running.collect { running ->
+                    binding.tvApiStatus.text = if (running) "API запущен: http://127.0.0.1:8765" else "API остановлен"
+                    binding.btnApiStart.isEnabled = !running
+                    binding.btnApiStop.isEnabled = running
+                } }
+                launch { ApiService.apiToken.collect { token -> binding.tvApiToken.text = if (token.isNotEmpty()) "Bearer token: $token" else "" } }
+                launch { ApiService.error.collect { if (it.isNotBlank()) Snackbar.make(binding.root, it, Snackbar.LENGTH_LONG).show() } }
+            }
+        }
+    }
+
+    private fun startApi() {
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, ApiService::class.java))
+        } catch (e: Exception) {
+            Snackbar.make(binding.root, "Не удалось запустить сервис: ${e.message}", Snackbar.LENGTH_LONG).show()
+        }
     }
 
     private fun applyWindowInsets() {
@@ -224,7 +280,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.topAppBar.menu.findItem(R.id.action_unload_model).isEnabled =
-            state.loadedModel != null && !state.isLoadingModel && !state.isUnloadingModel
+            state.loadedModel != null && !state.isLoadingModel && !state.isUnloadingModel && !state.isApiGenerating
 
         // 2. Loaded Model Status & Progress
         val model = state.loadedModel
@@ -333,7 +389,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 7. Input Field & Send / Stop Button
-        val canChat = npu.ready && model != null && !state.isLoadingModel && !state.isUnloadingModel
+        val canChat = npu.ready && model != null && !state.isLoadingModel && !state.isUnloadingModel && !state.isApiGenerating
         binding.etPromptInput.isEnabled = canChat && !state.isGenerating
         if (state.isGenerating || state.isLoadingModel) {
             binding.btnSendOrStop.isEnabled = true
@@ -347,11 +403,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         activeAlertDialog?.dismiss()
         activeAlertDialog = null
-        if (isFinishing) {
-            if (ru.npu.llamachat.engine.NpuLlamaBridge.ensureLibrariesLoaded()) {
-                ru.npu.llamachat.engine.NpuLlamaBridge.nativeCancelGeneration()
-                ru.npu.llamachat.engine.NpuLlamaBridge.nativeUnloadModel()
-            }
+        if (isFinishing && !ru.npu.llamachat.api.ApiService.running.value) {
+            viewModel.unloadModel()
         }
         super.onDestroy()
     }

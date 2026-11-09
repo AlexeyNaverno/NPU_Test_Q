@@ -13,6 +13,11 @@
         app:navigationIcon="@drawable/ic_npu_chip"
         app:title="@string/app_name" />
 
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/tabs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
     <!-- Компактная панель статуса Hexagon NPU, выбранной GGUF-модели, токенов и потребления ОЗУ -->
     <com.google.android.material.card.MaterialCardView
         android:id="@+id/cardNpuStatus"
@@ -159,6 +164,13 @@
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 
+    <LinearLayout
+        android:id="@+id/chatPanel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
     <!-- Центральная область: либо пустое состояние, либо лента сообщений чата -->
     <FrameLayout
         android:layout_width="match_parent"
@@ -304,5 +316,47 @@
                 android:text="@string/action_send" />
         </LinearLayout>
     </LinearLayout>
+
+    </LinearLayout>
+
+    <ScrollView
+        android:id="@+id/apiPanel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:visibility="gone">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+            <TextView
+                android:id="@+id/tvApiStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="API остановлен" />
+            <TextView
+                android:id="@+id/tvApiToken"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:textIsSelectable="true" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Доступ только с этого устройства. Не передавайте Bearer token посторонним. POST /v1/chat/completions, GET /v1/models. Потоковый ответ не поддерживается." />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnApiStart"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Запустить API" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnApiStop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Остановить API" />
+        </LinearLayout>
+    </ScrollView>
 
 </LinearLayout>
