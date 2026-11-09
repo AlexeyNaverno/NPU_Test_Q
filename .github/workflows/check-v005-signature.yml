@@ -25,7 +25,7 @@ jobs:
             echo "::error::Не удалось прочитать сертификат APK"; exit 1
           fi
           while IFS= read -r line; do echo "::notice title=apksigner::$line"; done < /tmp/certinfo.txt
-          FINGERPRINT=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' /tmp/certinfo.txt)
+          FINGERPRINT=$(sed -n 's/^.*certificate SHA-256 digest: //p' | head -1 /tmp/certinfo.txt)
           if [ -z "$FINGERPRINT" ]; then echo "::error::Не найден SHA-256 сертификата"; exit 1; fi
           echo "::notice title=Подпись релиза v0.0.5::SHA-256 сертификата: $FINGERPRINT"
           if [ -f "$HOME/.android/debug.keystore" ]; then
