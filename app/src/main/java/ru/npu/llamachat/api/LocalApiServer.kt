@@ -31,6 +31,7 @@ class LocalApiServer(private val session: ChatViewModel, private val token: Stri
                 try {
                     socket.accept().use { connection ->
                         client = connection
+                        if (closed) { client = null; return@use }
                         connection.soTimeout = 10_000
                         try { handle(connection) } finally { client = null }
                     }
@@ -114,7 +115,10 @@ class LocalApiServer(private val session: ChatViewModel, private val token: Stri
             require(messages.lastOrNull()?.role == MessageRole.USER) { "Последнее сообщение должно быть от пользователя" }
             val model = session.uiState.value.loadedModel?.fileName ?: throw IllegalStateException("Модель не загружена")
             require(!json.has("model") || json.getString("model") == model) { "Указана другая модель" }
-            val (reply, stats) = runBlocking { withContext(Dispatchers.Main) { session.generateForApi(messages, system) } }
+            val (reply, stats) = runBlocking { withContext(Dispatchers.Main) {
+                check(!closed) { "Сервер остановлен" }
+                session.generateForApi(messages, system)
+            } }
             val usage = JSONObject().put("prompt_tokens", stats.promptTokens).put("completion_tokens", stats.generatedTokens)
                 .put("total_tokens", stats.promptTokens + stats.generatedTokens)
             val choice = JSONObject().put("index", 0).put("message", JSONObject().put("role", "assistant").put("content", reply))

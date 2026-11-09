@@ -75,7 +75,7 @@ class ApiService : Service() {
     }
 
     override fun onDestroy() {
-        session.cancelActiveTask()
+        if (session.uiState.value.isApiGenerating) session.cancelActiveTask()
         server?.close()
         server = null
         running.value = false
