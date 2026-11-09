@@ -45,6 +45,8 @@ data class ChatUiState(
     val isLoadingModel: Boolean = false,
     val isUnloadingModel: Boolean = false,
     val isApiGenerating: Boolean = false,
+    val isImageBusy: Boolean = false,
+    val isMaintenance: Boolean = false,
     val loadProgress: Float = 0f,
     val loadedModel: LoadedModelInfo? = null,
     val isGenerating: Boolean = false,
@@ -78,6 +80,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun initHardwareBackend() {
+        if (_uiState.value.isImageBusy || _uiState.value.isMaintenance) return
+        _uiState.update { it.copy(npuInitializing = true) }
         viewModelScope.launch {
             _uiState.update { it.copy(npuInitializing = true) }
             val status = engine.initializeNpu(_uiState.value.config)
@@ -141,7 +145,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
-        if (state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating) return
+        if (state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating || state.isImageBusy || state.isMaintenance) return
 
         val hadModelBefore = state.loadedModel != null
         generationJob?.cancel()
@@ -213,7 +217,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** Освобождает веса и KV-кэш, не завершая приложение. */
     fun unloadModel() {
         val state = _uiState.value
-        if (state.loadedModel == null || state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating) return
+        if (state.loadedModel == null || state.isLoadingModel || state.isUnloadingModel || state.isApiGenerating || state.isImageBusy || state.isMaintenance) return
         _uiState.update { it.copy(isUnloadingModel = true) }
         engine.cancelGeneration()
         generationJob?.cancel()
@@ -239,7 +243,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun generateForApi(history: List<ChatMessage>, systemPrompt: String?): Pair<String, ru.npu.llamachat.engine.NativeGenerationStats> {
         val state = _uiState.value
         check(state.npuStatus.ready && state.loadedModel != null) { "Модель не загружена на NPU" }
-        check(!state.isGenerating && !state.isApiGenerating && !state.isLoadingModel && !state.isUnloadingModel) { "NPU занят" }
+        check(!state.isGenerating && !state.isApiGenerating && !state.isLoadingModel && !state.isUnloadingModel && !state.isImageBusy && !state.isMaintenance) { "NPU занят" }
         _uiState.update { it.copy(isApiGenerating = true) }
         try {
             val output = StringBuilder()
@@ -270,7 +274,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _events.tryEmit("Сначала выберите файл модели .gguf.")
             return
         }
-        if (cur.isGenerating || cur.isLoadingModel || cur.isUnloadingModel || cur.isApiGenerating) {
+        if (cur.isGenerating || cur.isLoadingModel || cur.isUnloadingModel || cur.isApiGenerating || cur.isImageBusy || cur.isMaintenance) {
             return
         }
 
@@ -390,14 +394,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Полная очистка эфемерного чата и сброс KV-кэша на Hexagon NPU.
      */
     fun clearChat() {
-        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel) return
+        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel || _uiState.value.isImageBusy || _uiState.value.isMaintenance) return
+        _uiState.update { it.copy(isMaintenance = true) }
         engine.cancelGeneration()
         generationJob?.cancel()
         viewModelScope.launch {
+            try {
             engine.clearChat()
             _uiState.update { s ->
                 s.copy(
                     isGenerating = false,
+                    isMaintenance = false,
                     messages = emptyList(),
                     tokenStats = TokenStats(
                         contextUsedTokens = 0,
@@ -408,11 +415,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             refreshRamOnce()
             _events.tryEmit("Чат и KV-кэш NPU очищены")
+            } finally {
+                _uiState.update { it.copy(isMaintenance = false) }
+            }
         }
     }
 
     fun updateModelConfig(newConfig: ModelConfig) {
-        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel || _uiState.value.isLoadingModel) return
+        if (_uiState.value.isApiGenerating || _uiState.value.isUnloadingModel || _uiState.value.isLoadingModel || _uiState.value.isImageBusy || _uiState.value.isMaintenance) return
+        _uiState.update { it.copy(isMaintenance = true) }
         val clean = newConfig.sanitized()
         val prev = _uiState.value.config
         val contextRecreated = _uiState.value.loadedModel != null && (
@@ -428,7 +439,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         generationJob?.cancel()
 
         viewModelScope.launch {
-            val res = engine.applyConfig(clean)
+            val res = try { engine.applyConfig(clean) } finally {
+                _uiState.update { it.copy(isMaintenance = false) }
+            }
             res.fold(
                 onSuccess = {
                     _uiState.update { s ->
@@ -464,6 +477,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
     }
+
+    /** Только главный поток: блокировка между LLM и QNN до закрытия всех графов. */
+    fun tryAcquireImageNpu(): Boolean {
+        val s = _uiState.value
+        if (!s.npuStatus.ready || s.npuInitializing || s.loadedModel != null || s.isLoadingModel ||
+            s.isUnloadingModel || s.isGenerating || s.isApiGenerating || s.isImageBusy || s.isMaintenance) return false
+        _uiState.update { it.copy(isImageBusy = true) }
+        return true
+    }
+
+    fun releaseImageNpu() { _uiState.update { it.copy(isImageBusy = false) } }
 
     override fun onCleared() {
         engine.cancelGeneration()

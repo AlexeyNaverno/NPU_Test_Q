@@ -25,6 +25,8 @@ import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.tabs.TabLayout
 import ru.npu.llamachat.api.ApiService
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import ru.npu.llamachat.databinding.ActivityMainBinding
 import ru.npu.llamachat.ui.ChatAdapter
 import ru.npu.llamachat.ui.ChatUiState
@@ -38,6 +40,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val viewModel: ChatViewModel get() = (application as NpuApplication).session
+    private val imageViewModel get() = (application as NpuApplication).images
+    private val pickImageFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) imageViewModel.importModel(uri)
+    }
+    private val saveImage = registerForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+        val bitmap = imageViewModel.state.value.bitmap
+        if (uri != null && bitmap != null) lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openOutputStream(uri)?.use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) } == true }
+            }
+            Snackbar.make(binding.root, if (result.getOrDefault(false)) "PNG сохранён" else "Не удалось сохранить PNG", Snackbar.LENGTH_LONG).show()
+        }
+    }
     private val chatAdapter = ChatAdapter()
     private var activeAlertDialog: AlertDialog? = null
 
@@ -80,14 +95,35 @@ class MainActivity : AppCompatActivity() {
     private fun setupTabsAndApi() {
         binding.tabs.addTab(binding.tabs.newTab().setText("Чат"))
         binding.tabs.addTab(binding.tabs.newTab().setText("API"))
+        binding.tabs.addTab(binding.tabs.newTab().setText("Изображения"))
         binding.tabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) {
                 binding.chatPanel.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
                 binding.apiPanel.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
+                binding.imagePanel.visibility = if (tab.position == 2) View.VISIBLE else View.GONE
             }
             override fun onTabUnselected(tab: TabLayout.Tab) = Unit
             override fun onTabReselected(tab: TabLayout.Tab) = Unit
         })
+        binding.btnImageImport.setOnClickListener { pickImageFolder.launch(null) }
+        binding.btnImageGenerate.setOnClickListener {
+            imageViewModel.generate(binding.etImagePrompt.text?.toString().orEmpty(),
+                if (binding.switchImageSteps.isChecked) 5 else 4, java.security.SecureRandom().nextLong())
+        }
+        binding.btnImageCancel.setOnClickListener { imageViewModel.cancel() }
+        binding.btnImageSave.setOnClickListener { saveImage.launch("image.png") }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                imageViewModel.state.collect { state ->
+                    binding.tvImageStatus.text = state.status
+                    binding.btnImageImport.isEnabled = !state.busy
+                    binding.btnImageGenerate.isEnabled = !state.busy && state.installed
+                    binding.btnImageCancel.isEnabled = state.busy
+                    binding.btnImageSave.isEnabled = !state.busy && state.bitmap != null
+                    binding.ivGeneratedImage.setImageBitmap(state.bitmap)
+                }
+            }
+        }
         binding.btnApiStart.setOnClickListener {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)

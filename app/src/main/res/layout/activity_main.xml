@@ -359,4 +359,85 @@
         </LinearLayout>
     </ScrollView>
 
+    <ScrollView
+        android:id="@+id/imagePanel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:visibility="gone">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Экспериментальный DreamShaper 8 LCM v73, 512×512. Модель для 8 Gen 2 может не загрузиться на 8s Gen 3; качество и работа NPU не проверены. Перед генерацией выгрузите модель чата. Для импорта нужно около 1,13 ГБ свободного места (при замене — вдвое больше). Условия OpenRAIL распространяются на модель."
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:autoLink="web"
+                android:text="https://huggingface.co/latentdivergence/dreamshaper8-lcm-npu-8gen2" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnImageImport"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Импортировать папку модели" />
+            <TextView
+                android:id="@+id/tvImageStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textIsSelectable="true" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="Описание изображения">
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etImagePrompt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textMultiLine"
+                    android:minLines="2"
+                    android:maxLines="5" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchImageSteps"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="5 шагов вместо 4" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnImageGenerate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Создать" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnImageCancel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Отмена" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnImageSave"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="PNG" />
+            </LinearLayout>
+            <ImageView
+                android:id="@+id/ivGeneratedImage"
+                android:layout_width="match_parent"
+                android:layout_height="360dp"
+                android:contentDescription="Сгенерированное изображение"
+                android:scaleType="fitCenter" />
+        </LinearLayout>
+    </ScrollView>
+
 </LinearLayout>
